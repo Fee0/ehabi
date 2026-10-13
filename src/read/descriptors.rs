@@ -72,6 +72,11 @@ impl<R: Reader> DescriptorIter<R> {
             offset: offset & !1,
             length: length & !1,
         };
+        // The EHABI requires a non-zero length. This also rejects a length
+        // field of 1, which is a catch descriptor with an empty scope.
+        if scope.length == 0 {
+            return Err(Error::InvalidScope);
+        }
 
         let descriptor = match (length & 1, offset & 1) {
             (0, 0) => {
@@ -392,11 +397,20 @@ mod tests {
     #[test]
     fn test_errors() {
         assert_eq!(
-            parse(&words_le(&[0x0001_0001]), false),
+            parse(&words_le(&[0x0001_0003]), false),
             Err(Error::InvalidDescriptorKind)
         );
         assert_eq!(
             parse(&words_le(&[0x0002_0000]), false),
+            Err(Error::InvalidScope)
+        );
+        // A catch descriptor (length field 1) with an empty scope.
+        assert_eq!(
+            parse(&words_le(&[0x0000_0001]), false),
+            Err(Error::InvalidScope)
+        );
+        assert_eq!(
+            parse(&words_le(&[0x0000_0001, 0]), true),
             Err(Error::InvalidScope)
         );
         assert_eq!(

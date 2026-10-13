@@ -31,9 +31,13 @@ impl<'data> EhSections<'data> {
     ///
     /// The Thumb bit is ignored.
     pub fn symbol_name(&self, address: u32) -> Option<&str> {
+        // `symbols` is sorted by address, so it is also sorted with the
+        // Thumb bit cleared.
+        let key = address & !1;
+        let index = self.symbols.partition_point(|(a, _)| a & !1 < key);
         self.symbols
-            .iter()
-            .find(|(a, _)| a & !1 == address & !1)
+            .get(index)
+            .filter(|(a, _)| a & !1 == key)
             .map(|(_, name)| name.as_str())
     }
 }
@@ -46,6 +50,33 @@ pub struct Relocations {
     section_address: u32,
     /// Section offset -> (relocation type, symbol address).
     relocations: Rc<HashMap<usize, (u32, u32)>>,
+}
+
+impl Relocations {
+    /// Create from `(offset, relocation type, symbol address)` triples.
+    ///
+    /// Only relocations that change the word are kept. In particular the
+    /// `R_ARM_NONE` personality dependency, which GNU as emits at the same
+    /// offset as the entry's `R_ARM_PREL31`, must not replace it.
+    pub fn new(
+        section_address: u32,
+        relocations: impl IntoIterator<Item = (usize, u32, u32)>,
+    ) -> Self {
+        let relocations = relocations
+            .into_iter()
+            .filter(|&(_, r_type, _)| {
+                matches!(
+                    r_type,
+                    constants::R_ARM_PREL31 | constants::R_ARM_TARGET2 | constants::R_ARM_ABS32
+                )
+            })
+            .map(|(offset, r_type, symbol)| (offset, (r_type, symbol)))
+            .collect();
+        Relocations {
+            section_address,
+            relocations: Rc::new(relocations),
+        }
+    }
 }
 
 impl Relocate for Relocations {
@@ -118,7 +149,7 @@ pub fn load<'data>(file: &object::File<'data>) -> Option<EhSections<'data>> {
     symbols.sort();
 
     let relocations = |section: &object::Section<'data, '_>| {
-        let mut map = HashMap::new();
+        let mut list = Vec::new();
         if relocatable {
             for (offset, relocation) in section.relocations() {
                 let RelocationFlags::Elf { r_type } = relocation.flags() else {
@@ -128,13 +159,10 @@ pub fn load<'data>(file: &object::File<'data>) -> Option<EhSections<'data>> {
                     continue;
                 };
                 let symbol = file.symbol_by_index(index).unwrap();
-                map.insert(offset as usize, (r_type, symbol_address(&symbol)));
+                list.push((offset as usize, r_type, symbol_address(&symbol)));
             }
         }
-        Relocations {
-            section_address: section_address(section),
-            relocations: Rc::new(map),
-        }
+        Relocations::new(section_address(section), list)
     };
 
     let exidx_data = exidx.data().ok()?;

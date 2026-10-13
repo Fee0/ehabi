@@ -18,7 +18,8 @@
 //!   [`EndianVec`](write::EndianVec), optionally recording relocations.
 //!
 //! * [`UnwindInstruction`] is shared by both. Each variant maps to exactly one
-//!   encoding, so instructions survive a read/write round trip byte for byte.
+//!   encoding, so instructions survive a read/write round trip byte for byte
+//!   (except that a non-minimal uleb128 operand is re-encoded minimally).
 //!
 //! ## Cargo features
 //!

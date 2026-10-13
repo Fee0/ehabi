@@ -4,7 +4,8 @@ A Rust library for reading and writing the 32-bit Arm exception-handling
 tables, `.ARM.exidx` and `.ARM.extab`.
 
 * `no_std` (needs `alloc`), zero-copy reading, no required dependencies
-* Read and write, with a byte-exact round trip for linked images
+* Read and write, with a byte-exact round trip for linked images (a
+  non-minimal uleb128 in a compact entry is the one thing that gets normalized)
 * Little- and big-endian
 * Relocation support on both sides: read relocatable objects through a
   `Relocate` hook, and record relocations when writing

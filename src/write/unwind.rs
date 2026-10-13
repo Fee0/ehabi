@@ -195,6 +195,38 @@ impl UnwindInstruction {
     }
 }
 
+/// The packed form of a frame unwinding description.
+pub(crate) struct PackedUnwindBytes {
+    /// The first `head_len` bytes, in the low bits of a word.
+    pub head: u32,
+    /// The remaining bytes, packed into whole words.
+    pub words: Vec<u32>,
+}
+
+/// Return the number of words needed after the first `head_len` bytes to
+/// hold `len` bytes.
+pub(crate) fn extra_unwind_words(len: usize, head_len: usize) -> usize {
+    len.saturating_sub(head_len).div_ceil(4)
+}
+
+/// Pack instruction bytes into words, most significant byte first, padding
+/// with *Finish*. The first `head_len` bytes go in the low bits of `head`.
+pub(crate) fn pack_unwind_bytes(bytes: &[u8], head_len: usize) -> PackedUnwindBytes {
+    let extra = extra_unwind_words(bytes.len(), head_len);
+    let mut bytes = bytes
+        .iter()
+        .copied()
+        .chain(core::iter::repeat(crate::constants::UNWIND_OPCODE_FINISH));
+    let mut pack = |len: usize| {
+        (0..len).fold(0u32, |word, _| {
+            (word << 8) | u32::from(bytes.next().unwrap_or(0))
+        })
+    };
+    let head = pack(head_len);
+    let words = (0..extra).map(|_| pack(4)).collect();
+    PackedUnwindBytes { head, words }
+}
+
 /// Encode a sequence of unwinding instructions.
 pub fn encode_unwind_instructions(instructions: &[UnwindInstruction]) -> Result<Vec<u8>> {
     let mut out = Vec::new();

@@ -208,10 +208,10 @@ impl<R: Reader> CompactEntry<R> {
     /// Return an iterator over the descriptors, or `None` for inline entries,
     /// which cannot have descriptors.
     pub fn descriptors(&self) -> Result<Option<DescriptorIter<R>>> {
-        let words = self.extra_words()?;
         if self.is_inline() {
             return Ok(None);
         }
+        let words = self.extra_words()?;
         let mut data = self.data.clone();
         data.skip(words * 4)?;
         let wide = self.personality().has_wide_scopes();

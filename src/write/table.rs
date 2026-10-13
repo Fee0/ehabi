@@ -3,6 +3,7 @@ use alloc::vec::Vec;
 use crate::common::{BaseAddresses, ExTabOffset, PersonalityIndex, Scope, SectionId};
 use crate::constants;
 use crate::unwind::UnwindInstruction;
+use crate::write::unwind::{extra_unwind_words, pack_unwind_bytes};
 use crate::write::{
     Address, Error, Reference, Result, Sections, Writer, encode_unwind_instructions,
 };
@@ -266,28 +267,19 @@ impl CompactEntry {
         }
         let bytes = encode_unwind_instructions(&self.instructions)?;
         let head_len = if personality.is_long() { 2 } else { 3 };
-        let extra = bytes.len().saturating_sub(head_len).div_ceil(4);
+        let extra = extra_unwind_words(bytes.len(), head_len);
         if ((!personality.is_long() || inline) && extra > 0) || extra > 0xff {
             return Err(Error::TooManyUnwindBytes(bytes.len()));
         }
 
-        let mut bytes = bytes
-            .into_iter()
-            .chain(core::iter::repeat(constants::UNWIND_OPCODE_FINISH));
-        let mut pack = |len: usize| {
-            (0..len).fold(0u32, |word, _| {
-                (word << 8) | u32::from(bytes.next().unwrap_or(0))
-            })
-        };
+        let packed = pack_unwind_bytes(&bytes, head_len);
         let mut first = constants::EHT_COMPACT_MODEL | (u32::from(personality.0) << 24);
         if personality.is_long() {
             first |= (extra as u32) << 16;
         }
         let mut words = Vec::with_capacity(1 + extra);
-        words.push(first | pack(head_len));
-        for _ in 0..extra {
-            words.push(pack(4));
-        }
+        words.push(first | packed.head);
+        words.extend(packed.words);
         Ok(words)
     }
 }
@@ -334,21 +326,14 @@ impl GenericEntry {
         match &self.data {
             GenericData::Gnu { instructions, lsda } => {
                 let bytes = encode_unwind_instructions(instructions)?;
-                let extra = bytes.len().saturating_sub(3).div_ceil(4);
+                let extra = extra_unwind_words(bytes.len(), 3);
                 if extra > 0xff {
                     return Err(Error::TooManyUnwindBytes(bytes.len()));
                 }
-                let mut bytes = bytes
-                    .into_iter()
-                    .chain(core::iter::repeat(constants::UNWIND_OPCODE_FINISH));
-                let mut pack = |len: usize| {
-                    (0..len).fold(0u32, |word, _| {
-                        (word << 8) | u32::from(bytes.next().unwrap_or(0))
-                    })
-                };
-                w.write_u32(((extra as u32) << 24) | pack(3))?;
-                for _ in 0..extra {
-                    w.write_u32(pack(4))?;
+                let packed = pack_unwind_bytes(&bytes, 3);
+                w.write_u32(((extra as u32) << 24) | packed.head)?;
+                for word in packed.words {
+                    w.write_u32(word)?;
                 }
                 w.write(lsda)?;
             }

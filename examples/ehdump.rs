@@ -136,11 +136,9 @@ fn print_descriptor<R: Reader>(
 ) -> ehabi::read::Result<()> {
     let extab = s.bases.extab.unwrap_or(0);
     let scope = descriptor.scope();
-    let range = format!(
-        "[0x{:x}, 0x{:x})",
-        scope.offset,
-        scope.offset + scope.length
-    );
+    // 32-bit scopes from untrusted input can extend past 4 GiB.
+    let end = u64::from(scope.offset) + u64::from(scope.length);
+    let range = format!("[0x{:x}, 0x{end:x})", scope.offset);
     let type_info = |value: u32| match s.symbol_name(value) {
         Some(name) => format!("0x{value:08x} ({name})"),
         None => format!("0x{value:08x}"),

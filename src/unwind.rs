@@ -6,7 +6,9 @@
 //!
 //! [`UnwindInstruction`] is shared between reading and writing. Each variant
 //! corresponds to exactly one encoding, so decoding and re-encoding an
-//! instruction reproduces the original bytes. Where the EHABI provides both a
+//! instruction reproduces the original bytes. The one exception is the
+//! uleb128 operand of [`UnwindInstruction::IncrementVspLarge`], which is
+//! re-encoded in its minimal form. Where the EHABI provides both a
 //! short and a general encoding for the same operation (for example `pop
 //! {r4-r7}` can be encoded as `0xa3` or as `0x80 0x0f`), there are separate
 //! variants for each.
@@ -149,10 +151,16 @@ impl UnwindInstruction {
     }
 
     /// Returns the core register mask popped by this instruction, if any.
+    ///
+    /// Returns `None` for a [`PopCoreRange`](Self::PopCoreRange) whose `last`
+    /// is outside `4..=11`, which cannot be encoded.
     pub fn popped_core_registers(&self) -> Option<u16> {
         match *self {
             UnwindInstruction::PopCore { mask } => Some(mask),
             UnwindInstruction::PopCoreRange { last, lr } => {
+                if !(4..=11).contains(&last) {
+                    return None;
+                }
                 let range = ((1u32 << (last + 1)) - (1 << 4)) as u16;
                 Some(if lr { range | (1 << 14) } else { range })
             }
@@ -208,10 +216,14 @@ impl fmt::Display for UnwindInstruction {
             DecrementVsp(bytes) => write!(f, "vsp = vsp - {bytes}"),
             IncrementVspLarge(bytes) => write!(f, "vsp = vsp + {bytes}"),
             RefuseToUnwind => f.write_str("refuse to unwind"),
-            PopCore { .. } | PopCoreRange { .. } => {
-                let mask = self.popped_core_registers().unwrap_or(0);
-                write!(f, "pop {}", CoreRegisters(mask))
-            }
+            PopCore { mask } => write!(f, "pop {}", CoreRegisters(mask)),
+            PopCoreRange { last, lr } => match self.popped_core_registers() {
+                Some(mask) => write!(f, "pop {}", CoreRegisters(mask)),
+                None => {
+                    let lr = if lr { ", lr" } else { "" };
+                    write!(f, "pop {{r4-r{last}{lr}}} (invalid range)")
+                }
+            },
             SetVsp(reg) => write!(f, "vsp = r{reg}"),
             Finish => f.write_str("finish"),
             PopVfpFstmx { first, count } => {
@@ -282,6 +294,32 @@ mod tests {
         assert_eq!(
             PopWmmxControl { mask: 0b101 }.to_string(),
             "pop {wCGR0, wCGR2}"
+        );
+    }
+
+    #[test]
+    fn test_display_out_of_range() {
+        use UnwindInstruction::*;
+        // Hand-built instructions with out-of-range fields must not panic.
+        assert_eq!(
+            PopCoreRange { last: 2, lr: false }.popped_core_registers(),
+            None
+        );
+        assert_eq!(
+            PopCoreRange {
+                last: 255,
+                lr: true
+            }
+            .to_string(),
+            "pop {r4-r255, lr} (invalid range)"
+        );
+        assert_eq!(
+            PopVfpVpush {
+                first: 255,
+                count: 255
+            }
+            .to_string(),
+            "pop {d255-d509}"
         );
     }
 }

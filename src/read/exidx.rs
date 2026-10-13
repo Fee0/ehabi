@@ -326,6 +326,23 @@ mod tests {
     }
 
     #[test]
+    fn test_inline_reserved_personality() {
+        // An inline entry for reserved personality routine 3. Its instructions
+        // cannot be decoded, but it has no descriptors either.
+        let data = words_le(&[0, 0x8300_b0b0]);
+        let exidx = ExIdx::new(&data, LittleEndian);
+        let ExIdxEntryData::Inline(compact) = exidx.entry(0).unwrap().data().clone() else {
+            panic!("expected inline entry");
+        };
+        assert_eq!(compact.personality(), crate::PersonalityIndex(3));
+        assert!(compact.descriptors().unwrap().is_none());
+        assert_eq!(
+            compact.instructions().err(),
+            Some(Error::UnsupportedPersonality(crate::PersonalityIndex(3)))
+        );
+    }
+
+    #[test]
     fn test_big_endian() {
         let data = [0x00, 0x00, 0x01, 0x00, 0x80, 0x97, 0xb0, 0xb0];
         let exidx = ExIdx::new(&data, BigEndian);

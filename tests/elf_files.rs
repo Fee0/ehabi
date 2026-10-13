@@ -459,3 +459,23 @@ fn write_relocatable() {
     );
     assert_eq!(sections.extab.relocations, [none(0, PR1)]);
 }
+
+/// GNU as emits the `R_ARM_NONE` personality dependency after the
+/// `R_ARM_PREL31` at the same offset; it must not replace it.
+#[test]
+fn relocation_order_gnu_as() {
+    use ehabi::constants::{R_ARM_NONE, R_ARM_PREL31};
+    use ehabi::read::Relocate;
+
+    let function = 0x0010_0040;
+    let pr0 = 0xf000_0010;
+    for relocations in [
+        [(0, R_ARM_PREL31, function), (0, R_ARM_NONE, pr0)],
+        [(0, R_ARM_NONE, pr0), (0, R_ARM_PREL31, function)],
+    ] {
+        let relocations = elf::Relocations::new(0x0030_0000, relocations);
+        let word = relocations.relocate_word(0, 0).unwrap();
+        let place = 0x0030_0000u32;
+        assert_eq!(word, function.wrapping_sub(place) & 0x7fff_ffff);
+    }
+}

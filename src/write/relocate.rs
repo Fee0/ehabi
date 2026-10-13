@@ -1,5 +1,5 @@
-use crate::common::{BaseAddresses, SectionId};
-use crate::write::{Address, Reference, Result, Writer, resolve_prel31};
+use crate::common::{BaseAddresses, SectionId, prel31_encode};
+use crate::write::{Address, Error, Reference, Result, Writer, resolve_prel31};
 
 /// A relocation to be applied to a section.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -93,17 +93,21 @@ impl<T: RelocateWriter> Writer for T {
             Reference::Address(Address::Symbol { symbol, addend }) => {
                 (RelocationTarget::Symbol(symbol), i64::from(addend))
             }
-            Reference::Section { section, offset } => {
-                (RelocationTarget::Section(section), offset as i64)
-            }
+            Reference::Section { section, offset } => (
+                RelocationTarget::Section(section),
+                i64::try_from(offset).unwrap_or(i64::MAX),
+            ),
         };
+        // The addend is stored in place, where the linker sign-extends the
+        // low 31 bits, so it must fit.
+        let addend_bits = prel31_encode(addend).ok_or(Error::Prel31OutOfRange(addend))?;
         self.relocate(Relocation {
             offset: self.len(),
             kind: RelocationKind::Prel31,
             target,
             addend,
         });
-        let word = (addend as u32 & 0x7fff_ffff) | (u32::from(high_bit) << 31);
+        let word = addend_bits | (u32::from(high_bit) << 31);
         self.writer_mut().write_u32(word)
     }
 
@@ -194,6 +198,25 @@ mod tests {
             addend: 0,
         })
         .unwrap();
+
+        // An addend that does not fit in 31 bits is an error, not truncated.
+        let len = w.writer.len();
+        for target in [
+            Reference::Address(Address::Symbol {
+                symbol: 1,
+                addend: 0x4000_0000,
+            }),
+            Reference::Section {
+                section: SectionId::ArmExtab,
+                offset: 0x4000_0000,
+            },
+        ] {
+            assert_eq!(
+                w.write_prel31(SectionId::ArmExidx, target, false, &bases),
+                Err(Error::Prel31OutOfRange(0x4000_0000))
+            );
+        }
+        assert_eq!(w.writer.len(), len);
 
         assert_eq!(
             w.writer.slice(),
