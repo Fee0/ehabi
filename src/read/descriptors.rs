@@ -59,12 +59,10 @@ impl<R: Reader> DescriptorIter<R> {
         } else {
             let length = u32::from(self.input.read_u16()?);
             let offset = u32::from(self.input.read_u16()?);
-            if length == 0 {
-                return if offset == 0 {
-                    Ok(None)
-                } else {
-                    Err(Error::InvalidScope)
-                };
+            // Only a whole zero word terminates the list; other zero lengths
+            // are rejected below.
+            if length == 0 && offset == 0 {
+                return Ok(None);
             }
             (length, offset)
         };
@@ -84,12 +82,11 @@ impl<R: Reader> DescriptorIter<R> {
                 Descriptor::Cleanup { scope, landing_pad }
             }
             (1, 0) => {
-                let place = self.input.offset_from(&self.section);
-                let word = self.input.read_relocatable_u32()?;
+                let (place, word) = self.read_word()?;
                 let landing_pad = Prel31::from_word(place, word);
                 let catches_reference = word & 0x8000_0000 != 0;
-                let place = self.input.offset_from(&self.section);
-                let catch_type = match self.input.read_relocatable_u32()? {
+                let (place, word) = self.read_word()?;
+                let catch_type = match word {
                     constants::CATCH_ANY => CatchType::Any,
                     constants::CATCH_ANY_AND_FAIL => CatchType::AnyAndFail,
                     value => CatchType::TypeInfo(Target2 {
@@ -118,7 +115,6 @@ impl<R: Reader> DescriptorIter<R> {
                 };
                 Descriptor::ExceptionSpec(ExceptionSpec {
                     scope,
-                    count,
                     type_infos,
                     landing_pad,
                     section: self.section.clone(),
@@ -129,9 +125,14 @@ impl<R: Reader> DescriptorIter<R> {
         Ok(Some(descriptor))
     }
 
-    fn read_prel31(&mut self) -> Result<Prel31> {
+    /// Read a relocatable word, returning its section offset and value.
+    fn read_word(&mut self) -> Result<(usize, u32)> {
         let place = self.input.offset_from(&self.section);
-        let word = self.input.read_relocatable_u32()?;
+        Ok((place, self.input.read_relocatable_u32()?))
+    }
+
+    fn read_prel31(&mut self) -> Result<Prel31> {
+        let (place, word) = self.read_word()?;
         Ok(Prel31::from_word(place, word))
     }
 }
@@ -200,7 +201,6 @@ pub enum CatchType {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ExceptionSpec<R: Reader> {
     scope: Scope,
-    count: u32,
     type_infos: R,
     landing_pad: Option<Prel31>,
     section: R,
@@ -216,7 +216,7 @@ impl<R: Reader> ExceptionSpec<R> {
     /// Return the number of types that may be thrown.
     #[inline]
     pub fn count(&self) -> u32 {
-        self.count
+        (self.type_infos.len() / 4) as u32
     }
 
     /// Return an iterator over the `type_info` references for the types that
@@ -266,11 +266,8 @@ mod tests {
     use super::*;
     use crate::endianity::LittleEndian;
     use crate::read::EndianSlice;
+    use crate::test_util::words_le;
     use alloc::vec::Vec;
-
-    fn words_le(words: &[u32]) -> Vec<u8> {
-        words.iter().flat_map(|w| w.to_le_bytes()).collect()
-    }
 
     fn parse(data: &[u8], wide: bool) -> Result<Vec<Descriptor<EndianSlice<'_, LittleEndian>>>> {
         let section = EndianSlice::new(data, LittleEndian);

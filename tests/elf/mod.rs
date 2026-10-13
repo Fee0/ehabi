@@ -6,8 +6,8 @@
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use ehabi::read::{EndianSlice, ExIdx, ExTab, Relocate, RelocateReader};
-use ehabi::{BaseAddresses, RunTimeEndian, constants};
+use ehabi::read::{EndianSlice, ExIdx, ExTab, Relocate, RelocateReader, relocate_prel31};
+use ehabi::{BaseAddresses, RunTimeEndian, SectionId, constants};
 use object::{Object, ObjectSection, ObjectSymbol, RelocationFlags, RelocationTarget};
 
 /// A reader for the EHABI sections of a loaded file.
@@ -27,6 +27,22 @@ pub struct EhSections<'data> {
 }
 
 impl<'data> EhSections<'data> {
+    /// Return the address of the named symbol, if any.
+    pub fn symbol_address(&self, name: &str) -> Option<u32> {
+        self.symbols
+            .iter()
+            .find(|(_, n)| n == name)
+            .map(|(a, _)| *a)
+    }
+
+    /// Format an address, followed by the name of the symbol there, if any.
+    pub fn describe(&self, address: u32) -> String {
+        match self.symbol_name(address) {
+            Some(name) => format!("0x{address:08x} ({name})"),
+            None => format!("0x{address:08x}"),
+        }
+    }
+
     /// Return the name of the symbol at `address`, if any.
     ///
     /// The Thumb bit is ignored.
@@ -84,16 +100,12 @@ impl Relocate for Relocations {
         let Some(&(r_type, symbol)) = self.relocations.get(&offset) else {
             return Ok(word);
         };
-        Ok(match r_type {
-            constants::R_ARM_PREL31 => {
-                let addend = ((word << 1) as i32 >> 1) as u32;
-                let place = self.section_address.wrapping_add(offset as u32);
-                let value = symbol.wrapping_add(addend).wrapping_sub(place);
-                (word & 0x8000_0000) | (value & 0x7fff_ffff)
-            }
-            // Bare-metal semantics (R_ARM_ABS32).
-            constants::R_ARM_TARGET2 | constants::R_ARM_ABS32 => symbol.wrapping_add(word),
-            _ => word,
+        Ok(if r_type == constants::R_ARM_PREL31 {
+            let place = self.section_address.wrapping_add(offset as u32);
+            relocate_prel31(word, symbol, place)
+        } else {
+            // R_ARM_TARGET2 and R_ARM_ABS32, with bare-metal semantics.
+            symbol.wrapping_add(word)
         })
     }
 }
@@ -121,8 +133,8 @@ pub fn load<'data>(file: &object::File<'data>) -> Option<EhSections<'data>> {
         RunTimeEndian::Big
     };
     let relocatable = file.kind() == object::ObjectKind::Relocatable;
-    let exidx = file.section_by_name(".ARM.exidx")?;
-    let extab = file.section_by_name(".ARM.extab");
+    let exidx = file.section_by_name(SectionId::ArmExidx.name())?;
+    let extab = file.section_by_name(SectionId::ArmExtab.name());
 
     let section_address = |section: &object::Section<'data, '_>| {
         if relocatable {
@@ -141,10 +153,15 @@ pub fn load<'data>(file: &object::File<'data>) -> Option<EhSections<'data>> {
 
     let mut symbols: Vec<(u32, String)> = file
         .symbols()
-        .filter(|symbol| !symbol.name().unwrap_or("").is_empty())
         .filter(|symbol| symbol.kind() != object::SymbolKind::Section)
-        .filter(|symbol| !symbol.name().unwrap_or("").starts_with('$'))
-        .map(|symbol| (symbol_address(&symbol), symbol.name().unwrap().to_string()))
+        .filter_map(|symbol| {
+            // Skip unnamed symbols and mapping symbols ($a, $d, ...).
+            let name = symbol
+                .name()
+                .ok()
+                .filter(|n| !n.is_empty() && !n.starts_with('$'))?;
+            Some((symbol_address(&symbol), name.to_string()))
+        })
         .collect();
     symbols.sort();
 

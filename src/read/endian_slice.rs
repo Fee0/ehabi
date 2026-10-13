@@ -1,5 +1,5 @@
 use alloc::borrow::Cow;
-use core::ops::{Deref, Index, RangeFrom, RangeTo};
+use core::ops::Deref;
 
 use crate::endianity::Endianity;
 use crate::read::{Error, Reader, Result};
@@ -56,26 +56,6 @@ where
     type Target = [u8];
     fn deref(&self) -> &Self::Target {
         self.slice
-    }
-}
-
-impl<'input, Endian> Index<RangeFrom<usize>> for EndianSlice<'input, Endian>
-where
-    Endian: Endianity,
-{
-    type Output = [u8];
-    fn index(&self, idx: RangeFrom<usize>) -> &Self::Output {
-        &self.slice[idx]
-    }
-}
-
-impl<'input, Endian> Index<RangeTo<usize>> for EndianSlice<'input, Endian>
-where
-    Endian: Endianity,
-{
-    type Output = [u8];
-    fn index(&self, idx: RangeTo<usize>) -> &Self::Output {
-        &self.slice[idx]
     }
 }
 

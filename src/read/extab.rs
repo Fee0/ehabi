@@ -3,7 +3,7 @@ use crate::constants;
 use crate::endianity::Endianity;
 use crate::read::{
     DescriptorIter, EndianSlice, Error, Prel31, Reader, Result, Section, UnwindBytes,
-    UnwindInstructionIter,
+    UnwindInstructionIter, base_address,
 };
 
 /// The `.ARM.extab` section: the exception-handling table.
@@ -192,11 +192,7 @@ impl<R: Reader> CompactEntry<R> {
         let words = self.extra_words()?;
         let mut data = self.data.clone();
         let words = data.split(words * 4)?;
-        let head_len = if self.personality() == PersonalityIndex::SU16 {
-            3
-        } else {
-            2
-        };
+        let head_len = self.personality().unwind_head_len() as u8;
         Ok(UnwindBytes::new(self.word, head_len, words))
     }
 
@@ -254,9 +250,7 @@ impl<R: Reader> GenericEntry<R> {
     ///
     /// `bases.extab` must be set.
     pub fn personality_address(&self, bases: &BaseAddresses) -> Result<u32> {
-        let extab = bases
-            .extab
-            .ok_or(Error::MissingBaseAddress(SectionId::ArmExtab))?;
+        let extab = base_address(bases, SectionId::ArmExtab)?;
         Ok(self.personality.address(extab))
     }
 
@@ -267,6 +261,12 @@ impl<R: Reader> GenericEntry<R> {
     #[inline]
     pub fn data(&self) -> &R {
         &self.data
+    }
+
+    /// Limit the entry's data to `len` bytes, for when its extent is known.
+    #[cfg(feature = "write")]
+    pub(crate) fn truncate(&mut self, len: usize) -> Result<()> {
+        self.data.truncate(len)
     }
 
     /// Return the bytes of the frame unwinding description, using the
@@ -308,12 +308,9 @@ mod tests {
     use super::*;
     use crate::endianity::LittleEndian;
     use crate::read::Descriptor;
+    use crate::test_util::words_le;
     use crate::unwind::UnwindInstruction::*;
     use alloc::vec::Vec;
-
-    fn words_le(words: &[u32]) -> Vec<u8> {
-        words.iter().flat_map(|w| w.to_le_bytes()).collect()
-    }
 
     #[test]
     fn test_compact_lu16() {

@@ -46,7 +46,7 @@ EHABI. It follows libgcc (`unwind-arm-common.inc`, `pr-support.c`).
 ```
 src/
   lib.rs, common.rs, constants.rs, endianity.rs, leb128.rs
-  unwind.rs              UnwindInstruction (+ Display)
+  unwind.rs              UnwindInstruction: decoding, Display
   read/
     reader.rs            Reader trait
     endian_slice.rs      EndianSlice
@@ -54,7 +54,7 @@ src/
     exidx.rs             ExIdx, ExIdxEntry, binary-search lookup
     extab.rs             ExTab, CompactEntry, GenericEntry, UnwindEntry
     descriptors.rs       Descriptor (cleanup / catch / exception spec)
-    unwind.rs            UnwindBytes, UnwindInstructionIter, decoding
+    unwind.rs            UnwindBytes, UnwindInstructionIter
   write/
     writer.rs            Writer trait
     endian_vec.rs        EndianVec

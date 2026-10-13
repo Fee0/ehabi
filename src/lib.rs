@@ -57,3 +57,6 @@ pub mod read;
 
 #[cfg(feature = "write")]
 pub mod write;
+
+#[cfg(test)]
+mod test_util;

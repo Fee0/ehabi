@@ -12,16 +12,24 @@ use crate::read::{Reader, Result};
 /// would contain after linking, for some layout of the sections chosen by the
 /// caller.
 ///
-/// For `R_ARM_PREL31` the result is
-/// `(word & 0x8000_0000) | ((S + A - P) & 0x7fff_ffff)`, where `A` is the
-/// sign-extended low 31 bits of `word`, `S` is the address of the target
-/// symbol and `P` is the address of the word. Use the same layout for
+/// For `R_ARM_PREL31` use [`relocate_prel31`]. Use the same layout for
 /// [`BaseAddresses`](crate::BaseAddresses).
 pub trait Relocate {
     /// Relocate a word which was read from the given section offset.
     ///
     /// Return the word unchanged if there is no relocation at this offset.
     fn relocate_word(&self, offset: usize, word: u32) -> Result<u32>;
+}
+
+/// Apply an `R_ARM_PREL31` relocation to `word`, as a linker would.
+///
+/// The result is `(word & 0x8000_0000) | ((S + A - P) & 0x7fff_ffff)`, where
+/// `S` is `symbol`, `P` is `place` (the address of the word), and the addend
+/// `A` is the sign-extended low 31 bits of `word`.
+pub fn relocate_prel31(word: u32, symbol: u32, place: u32) -> u32 {
+    let addend = crate::common::prel31_value(word) as u32;
+    let value = symbol.wrapping_add(addend).wrapping_sub(place);
+    (word & 0x8000_0000) | (value & 0x7fff_ffff)
 }
 
 impl<T: Relocate + ?Sized> Relocate for &T {
@@ -142,6 +150,13 @@ mod tests {
         fn relocate_word(&self, offset: usize, word: u32) -> Result<u32> {
             Ok(if offset == 4 { word + 0x100 } else { word })
         }
+    }
+
+    #[test]
+    fn test_relocate_prel31() {
+        // Addend -4, bit 31 preserved.
+        assert_eq!(relocate_prel31(0xffff_fffc, 0x1000, 0x2000), 0xffff_effc);
+        assert_eq!(relocate_prel31(0x0000_0010, 0x2000, 0x1000), 0x0000_1010);
     }
 
     #[test]

@@ -2,7 +2,7 @@ use alloc::borrow::Cow;
 use core::fmt::Debug;
 
 use crate::endianity::Endianity;
-use crate::read::{Error, Result};
+use crate::read::Result;
 
 /// A trait for reading the data from an EHABI section.
 ///
@@ -99,15 +99,5 @@ pub trait Reader: Debug + Clone {
         let mut reader = self.clone();
         reader.skip(offset)?;
         Ok(reader)
-    }
-
-    /// Return an error if fewer than `len` bytes remain.
-    #[inline]
-    fn require(&self, len: usize) -> Result<()> {
-        if self.len() < len {
-            Err(Error::UnexpectedEof)
-        } else {
-            Ok(())
-        }
     }
 }

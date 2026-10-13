@@ -7,8 +7,9 @@
 
 use std::{env, fs, process};
 
+use ehabi::UnwindInstruction;
 use ehabi::read::{
-    CatchType, Descriptor, ExIdxEntryData, Reader, UnwindBytes, UnwindEntry, UnwindInstructionIter,
+    CatchType, Descriptor, Reader, UnwindBytes, UnwindEntry, decode_unwind_instruction,
 };
 
 #[path = "../tests/elf/mod.rs"]
@@ -38,10 +39,6 @@ fn main() {
 }
 
 fn dump(s: &elf::EhSections<'_>) -> ehabi::read::Result<()> {
-    let name = |address: u32| match s.symbol_name(address) {
-        Some(name) => format!("0x{address:08x} ({name})"),
-        None => format!("0x{address:08x}"),
-    };
     println!(
         ".ARM.exidx at 0x{:08x}, {} entries; .ARM.extab at 0x{:08x}, {} bytes{}",
         s.bases.exidx.unwrap_or(0),
@@ -61,26 +58,21 @@ fn dump(s: &elf::EhSections<'_>) -> ehabi::read::Result<()> {
         println!(
             "[0x{:04x}] function {}",
             entry.offset().0,
-            name(entry.function_address(&s.bases)?)
+            s.describe(entry.function_address(&s.bases)?)
         );
-        let location = match entry.data() {
-            ExIdxEntryData::CantUnwind => "",
-            ExIdxEntryData::Inline(_) => "inline ",
-            ExIdxEntryData::ExTab(_) => "",
-        };
         match entry.resolve(&s.extab, &s.bases)? {
             UnwindEntry::CantUnwind => println!("  EXIDX_CANTUNWIND"),
             UnwindEntry::Compact(compact) => {
                 match compact.offset() {
                     Some(offset) => print!("  .ARM.extab+0x{:x}: ", offset.0),
-                    None => print!("  "),
+                    None => print!("  inline "),
                 }
                 println!(
-                    "{location}compact model, word 0x{:08x}, {}",
+                    "compact model, word 0x{:08x}, {}",
                     compact.word(),
                     compact.personality()
                 );
-                print_instructions(compact.unwind_bytes(), compact.instructions());
+                print_instructions(compact.unwind_bytes());
                 if let Some(mut descriptors) = compact.descriptors()? {
                     while let Some(descriptor) = descriptors.next()? {
                         print_descriptor(s, &descriptor)?;
@@ -91,9 +83,9 @@ fn dump(s: &elf::EhSections<'_>) -> ehabi::read::Result<()> {
                 println!(
                     "  .ARM.extab+0x{:x}: generic model, personality {}",
                     generic.offset().0,
-                    name(generic.personality_address(&s.bases)?)
+                    s.describe(generic.personality_address(&s.bases)?)
                 );
-                print_instructions(generic.gnu_unwind_bytes(), generic.gnu_instructions());
+                print_instructions(generic.gnu_unwind_bytes());
                 if let Ok(offset) = generic.gnu_lsda_offset() {
                     println!("    LSDA at .ARM.extab+0x{:x}", offset.0);
                 }
@@ -103,23 +95,31 @@ fn dump(s: &elf::EhSections<'_>) -> ehabi::read::Result<()> {
     Ok(())
 }
 
-fn print_instructions<R: Reader>(
-    bytes: ehabi::read::Result<UnwindBytes<R>>,
-    instructions: ehabi::read::Result<UnwindInstructionIter<R>>,
-) {
-    let (Ok(bytes), Ok(mut instructions)) = (bytes, instructions) else {
+/// Print the bytes of an unwinding description and the instructions they
+/// decode to, up to the first *Finish*. Each instruction is shown with the
+/// bytes it was decoded from.
+fn print_instructions<R: Reader>(bytes: ehabi::read::Result<UnwindBytes<R>>) {
+    let Ok(bytes) = bytes else {
         println!("    (unwinding instructions not decodable)");
         return;
     };
-    let raw: Vec<String> = bytes.map(|b| format!("{b:02x}")).collect();
-    println!("    bytes: {}", raw.join(" "));
+    let hex = |bytes: &[u8], prefix: &str| -> String {
+        let hex: Vec<String> = bytes.iter().map(|b| format!("{prefix}{b:02x}")).collect();
+        hex.join(" ")
+    };
+    let all: Vec<u8> = bytes.collect();
+    println!("    bytes: {}", hex(&all, ""));
+    let mut rest = &all[..];
     loop {
-        match instructions.next() {
+        let mut iter = rest.iter().copied();
+        match decode_unwind_instruction(&mut iter) {
             Ok(Some(instruction)) => {
-                let mut encoded = Vec::new();
-                instruction.encode(&mut encoded).unwrap();
-                let encoded: Vec<String> = encoded.iter().map(|b| format!("0x{b:02x}")).collect();
-                println!("    {:<16} ; {instruction}", encoded.join(" "));
+                let used = rest.len() - iter.len();
+                println!("    {:<16} ; {instruction}", hex(&rest[..used], "0x"));
+                rest = &rest[used..];
+                if instruction == UnwindInstruction::Finish {
+                    break;
+                }
             }
             Ok(None) => break,
             Err(e) => {
@@ -139,10 +139,6 @@ fn print_descriptor<R: Reader>(
     // 32-bit scopes from untrusted input can extend past 4 GiB.
     let end = u64::from(scope.offset) + u64::from(scope.length);
     let range = format!("[0x{:x}, 0x{end:x})", scope.offset);
-    let type_info = |value: u32| match s.symbol_name(value) {
-        Some(name) => format!("0x{value:08x} ({name})"),
-        None => format!("0x{value:08x}"),
-    };
     match descriptor {
         Descriptor::Cleanup { landing_pad, .. } => {
             println!(
@@ -159,7 +155,7 @@ fn print_descriptor<R: Reader>(
             let caught = match catch_type {
                 CatchType::Any => "...".to_string(),
                 CatchType::AnyAndFail => "... (fail)".to_string(),
-                CatchType::TypeInfo(t) => type_info(t.value),
+                CatchType::TypeInfo(t) => s.describe(t.value),
             };
             let reference = if *catches_reference { "&" } else { "" };
             if landing_pad.value == 0 {
@@ -175,7 +171,7 @@ fn print_descriptor<R: Reader>(
             let mut types = Vec::new();
             let mut iter = spec.type_infos();
             while let Some(t) = iter.next()? {
-                types.push(type_info(t.value));
+                types.push(s.describe(t.value));
             }
             print!("    exception spec {range} throw({})", types.join(", "));
             match spec.landing_pad() {

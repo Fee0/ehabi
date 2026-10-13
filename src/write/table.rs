@@ -3,10 +3,8 @@ use alloc::vec::Vec;
 use crate::common::{BaseAddresses, ExTabOffset, PersonalityIndex, Scope, SectionId};
 use crate::constants;
 use crate::unwind::UnwindInstruction;
-use crate::write::unwind::{extra_unwind_words, pack_unwind_bytes};
-use crate::write::{
-    Address, Error, Reference, Result, Sections, Writer, encode_unwind_instructions,
-};
+use crate::write::unwind::pack_unwind_instructions;
+use crate::write::{Address, Error, Reference, Result, Sections, Writer};
 
 /// A table of unwinding information, which can be written to `.ARM.exidx`
 /// and `.ARM.extab`.
@@ -265,14 +263,12 @@ impl CompactEntry {
         if !personality.is_defined() {
             return Err(Error::UnsupportedPersonality(personality));
         }
-        let bytes = encode_unwind_instructions(&self.instructions)?;
-        let head_len = if personality.is_long() { 2 } else { 3 };
-        let extra = extra_unwind_words(bytes.len(), head_len);
-        if ((!personality.is_long() || inline) && extra > 0) || extra > 0xff {
-            return Err(Error::TooManyUnwindBytes(bytes.len()));
+        let packed = pack_unwind_instructions(&self.instructions, personality.unwind_head_len())?;
+        let extra = packed.words.len();
+        if (!personality.is_long() || inline) && extra > 0 {
+            return Err(Error::TooManyUnwindBytes(packed.len));
         }
 
-        let packed = pack_unwind_bytes(&bytes, head_len);
         let mut first = constants::EHT_COMPACT_MODEL | (u32::from(personality.0) << 24);
         if personality.is_long() {
             first |= (extra as u32) << 16;
@@ -325,13 +321,8 @@ impl GenericEntry {
         )?;
         match &self.data {
             GenericData::Gnu { instructions, lsda } => {
-                let bytes = encode_unwind_instructions(instructions)?;
-                let extra = extra_unwind_words(bytes.len(), 3);
-                if extra > 0xff {
-                    return Err(Error::TooManyUnwindBytes(bytes.len()));
-                }
-                let packed = pack_unwind_bytes(&bytes, 3);
-                w.write_u32(((extra as u32) << 24) | packed.head)?;
+                let packed = pack_unwind_instructions(instructions, 3)?;
+                w.write_u32(((packed.words.len() as u32) << 24) | packed.head)?;
                 for word in packed.words {
                     w.write_u32(word)?;
                 }
@@ -439,14 +430,10 @@ impl Descriptor {
                     return Err(Error::TooManyTypeInfos(type_infos.len()));
                 }
                 let count = type_infos.len() as u32;
-                match (landing_pad, call_unexpected) {
-                    (Some(_), _) => w.write_u32(count | 0x8000_0000)?,
-                    (None, Some(symbol)) => {
-                        w.write_dependency(symbol)?;
-                        w.write_u32(count)?;
-                    }
-                    (None, None) => w.write_u32(count)?,
+                if let (None, Some(symbol)) = (landing_pad, call_unexpected) {
+                    w.write_dependency(symbol)?;
                 }
+                w.write_u32(count | (u32::from(landing_pad.is_some()) << 31))?;
                 for type_info in type_infos {
                     w.write_target2(*type_info)?;
                 }
@@ -482,14 +469,9 @@ fn write_scope<W: Writer>(w: &mut W, scope: Scope, kind: (u32, u32), wide: bool)
 mod tests {
     use super::*;
     use crate::endianity::LittleEndian;
+    use crate::test_util::words;
     use crate::write::EndianVec;
     use UnwindInstruction::*;
-
-    fn words(data: &[u8]) -> Vec<u32> {
-        data.chunks(4)
-            .map(|c| u32::from_le_bytes(c.try_into().unwrap()))
-            .collect()
-    }
 
     #[test]
     fn test_compact_words() {

@@ -55,7 +55,7 @@
 //!
 //! * Every place-relative reference is returned as a [`Prel31`], which
 //!   records where in the section it was read so it can be resolved against
-//!   [`BaseAddresses`](crate::BaseAddresses).
+//!   [`BaseAddresses`].
 //!
 //! * For relocatable objects, wrap the section data in a [`RelocateReader`]
 //!   so that relocated words are seen as they would be after linking.
@@ -63,7 +63,7 @@
 use core::fmt;
 use core::result;
 
-use crate::common::{PersonalityIndex, SectionId};
+use crate::common::{BaseAddresses, PersonalityIndex, SectionId};
 
 /// Implement `Iterator` (and `FallibleIterator`) for a type with an inherent
 /// `fn next(&mut self) -> Result<Option<Item>>` that stops after an error.
@@ -176,6 +176,11 @@ impl core::error::Error for Error {}
 
 /// The result of a parse.
 pub type Result<T> = result::Result<T, Error>;
+
+/// Return the address of `section`, or an error if it is not known.
+pub(crate) fn base_address(bases: &BaseAddresses, section: SectionId) -> Result<u32> {
+    bases.get(section).ok_or(Error::MissingBaseAddress(section))
+}
 
 /// A convenience trait for loading the EHABI sections from object files.
 ///

@@ -3,7 +3,7 @@ use crate::constants;
 use crate::endianity::Endianity;
 use crate::read::{
     CompactEntry, EndianSlice, Error, ExTab, ExTabEntry, Prel31, Reader, Result, Section,
-    UnwindEntry,
+    UnwindEntry, base_address,
 };
 
 /// The `.ARM.exidx` section: the exception index table.
@@ -99,20 +99,27 @@ impl<R: Reader> ExIdx<R> {
     ///
     /// `bases.exidx` must be set.
     pub fn find(&self, address: u32, bases: &BaseAddresses) -> Result<Option<ExIdxEntry<R>>> {
+        let exidx = base_address(bases, SectionId::ArmExidx)?;
+        // Only the function word is needed to compare, so read just that and
+        // parse the one matching entry at the end.
         let mut low = 0;
         let mut high = self.len();
-        let mut found = None;
         while low < high {
             let mid = low + (high - low) / 2;
-            let entry = self.entry(mid)?;
-            if entry.function_address(bases)? <= address {
-                found = Some(entry);
+            let offset = mid * 8;
+            let word = self.section.range_from(offset)?.read_relocatable_u32()?;
+            if word & 0x8000_0000 != 0 {
+                return Err(Error::InvalidExIdxFunctionWord(word));
+            }
+            if Prel31::from_word(offset, word).address(exidx) <= address {
                 low = mid + 1;
             } else {
                 high = mid;
             }
         }
-        Ok(found)
+        low.checked_sub(1)
+            .map(|index| self.entry(index))
+            .transpose()
     }
 }
 
@@ -178,9 +185,11 @@ impl<R: Reader> ExIdxEntry<R> {
         let data = if word == constants::EXIDX_CANTUNWIND {
             ExIdxEntryData::CantUnwind
         } else if word & constants::EHT_COMPACT_MODEL != 0 {
-            let mut empty = section.clone();
+            // Inline entries have no further data; the reader is only a
+            // placeholder.
+            let mut empty = input.clone();
             empty.empty();
-            ExIdxEntryData::Inline(CompactEntry::new(None, word, empty, section.clone()))
+            ExIdxEntryData::Inline(CompactEntry::new(None, word, empty.clone(), empty))
         } else {
             ExIdxEntryData::ExTab(Prel31::from_word(offset + 4, word))
         };
@@ -207,10 +216,9 @@ impl<R: Reader> ExIdxEntry<R> {
     ///
     /// `bases.exidx` must be set.
     pub fn function_address(&self, bases: &BaseAddresses) -> Result<u32> {
-        let exidx = bases
-            .exidx
-            .ok_or(Error::MissingBaseAddress(SectionId::ArmExidx))?;
-        Ok(self.function.address(exidx))
+        Ok(self
+            .function
+            .address(base_address(bases, SectionId::ArmExidx)?))
     }
 
     /// Return the unwinding data for the function.
@@ -226,12 +234,8 @@ impl<R: Reader> ExIdxEntry<R> {
         let ExIdxEntryData::ExTab(reference) = self.data else {
             return Ok(None);
         };
-        let exidx = bases
-            .exidx
-            .ok_or(Error::MissingBaseAddress(SectionId::ArmExidx))?;
-        let extab = bases
-            .extab
-            .ok_or(Error::MissingBaseAddress(SectionId::ArmExtab))?;
+        let exidx = base_address(bases, SectionId::ArmExidx)?;
+        let extab = base_address(bases, SectionId::ArmExtab)?;
         let address = reference.address(exidx);
         Ok(Some(ExTabOffset(address.wrapping_sub(extab) as usize)))
     }
@@ -260,12 +264,9 @@ impl<R: Reader> ExIdxEntry<R> {
 mod tests {
     use super::*;
     use crate::endianity::{BigEndian, LittleEndian};
+    use crate::test_util::words_le;
     use crate::unwind::UnwindInstruction;
     use alloc::vec::Vec;
-
-    fn words_le(words: &[u32]) -> Vec<u8> {
-        words.iter().flat_map(|w| w.to_le_bytes()).collect()
-    }
 
     #[test]
     fn test_entries() {

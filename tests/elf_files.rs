@@ -7,8 +7,14 @@ use ehabi::{PersonalityIndex, Scope, UnwindInstruction, UnwindInstruction::*};
 
 mod elf;
 
-fn load(name: &str) -> Vec<u8> {
+fn read_fixture(name: &str) -> Vec<u8> {
     std::fs::read(format!("{}/tests/data/{name}", env!("CARGO_MANIFEST_DIR"))).unwrap()
+}
+
+/// Parse a fixture's EHABI sections.
+fn sections<'data>(data: &'data [u8]) -> elf::EhSections<'data> {
+    let file = object::File::parse(data).unwrap();
+    elf::load(&file).unwrap()
 }
 
 /// Return the resolved unwinding information for the named function.
@@ -53,9 +59,8 @@ fn descriptors<'a>(entry: &UnwindEntry<elf::Reader<'a>>) -> Vec<Descriptor<elf::
 
 /// The functions in `unwind.s` decode to what their directives specify.
 fn check_unwind_object(name: &str) {
-    let data = load(name);
-    let file = object::File::parse(&*data).unwrap();
-    let s = elf::load(&file).unwrap();
+    let data = read_fixture(name);
+    let s = sections(&data);
     assert!(s.relocatable);
     assert_eq!(s.exidx.len(), 10);
 
@@ -126,13 +131,8 @@ fn check_unwind_object(name: &str) {
     // function.
     let f = entry_for(&s, "f_pr1_descriptors");
     assert_eq!(compact_personality(&f), (PersonalityIndex::LU16, false));
-    let function = s
-        .symbols
-        .iter()
-        .find(|(_, n)| n == "f_pr1_descriptors")
-        .unwrap()
-        .0;
-    let type_info = s.symbols.iter().find(|(_, n)| n == "_ZTIi").unwrap().0;
+    let function = s.symbol_address("f_pr1_descriptors").unwrap();
+    let type_info = s.symbol_address("_ZTIi").unwrap();
     let extab = s.bases.extab.unwrap();
     let pad = function + 0x10;
     let d = descriptors(&f);
@@ -264,9 +264,8 @@ fn unwind_object_big_endian() {
 /// addresses reproduces the sections byte for byte.
 #[test]
 fn linked_roundtrip() {
-    let data = load("eh-armv7.so");
-    let file = object::File::parse(&*data).unwrap();
-    let s = elf::load(&file).unwrap();
+    let data = read_fixture("eh-armv7.so");
+    let s = sections(&data);
     assert!(!s.relocatable);
 
     let table = UnwindTable::from_read(&s.exidx, &s.extab, &s.bases).unwrap();
@@ -294,9 +293,8 @@ fn linked_roundtrip() {
 /// Every function can be found by address in the sorted, linked table.
 #[test]
 fn linked_lookup() {
-    let data = load("eh-armv7.so");
-    let file = object::File::parse(&*data).unwrap();
-    let s = elf::load(&file).unwrap();
+    let data = read_fixture("eh-armv7.so");
+    let s = sections(&data);
 
     let mut entries = s.exidx.entries();
     let mut previous = None;
@@ -337,9 +335,8 @@ fn object_roundtrip() {
         "eh-armv7.o",
         "eh-thumbv7.o",
     ] {
-        let data = load(name);
-        let file = object::File::parse(&*data).unwrap();
-        let s = elf::load(&file).unwrap();
+        let data = read_fixture(name);
+        let s = sections(&data);
         let table = UnwindTable::from_read(&s.exidx, &s.extab, &s.bases).unwrap();
 
         let mut sections = Sections::new(EndianVec::new(s.endian));
@@ -364,15 +361,6 @@ fn write_relocatable() {
     struct Object {
         data: EndianVec<LittleEndian>,
         relocations: Vec<Relocation>,
-    }
-
-    impl Clone for Object {
-        fn clone(&self) -> Self {
-            Object {
-                data: EndianVec::new(LittleEndian),
-                relocations: Vec::new(),
-            }
-        }
     }
 
     impl RelocateWriter for Object {
@@ -417,10 +405,14 @@ fn write_relocatable() {
         data: IndexEntryData::ExTab(id),
     });
 
-    let mut sections = Sections::new(Object {
+    let object = || Object {
         data: EndianVec::new(LittleEndian),
         relocations: Vec::new(),
-    });
+    };
+    let mut sections = Sections {
+        exidx: write::ExIdx(object()),
+        extab: write::ExTab(object()),
+    };
     table
         .write(&mut sections, &ehabi::BaseAddresses::default())
         .unwrap();

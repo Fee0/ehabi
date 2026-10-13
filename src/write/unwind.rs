@@ -1,5 +1,6 @@
 use alloc::vec::Vec;
 
+use crate::constants::*;
 use crate::unwind::UnwindInstruction;
 use crate::write::{Error, Result};
 
@@ -37,21 +38,24 @@ impl UnwindInstruction {
         };
 
         match *self {
-            IncrementVsp(bytes) => out.push(vsp(bytes)?),
-            DecrementVsp(bytes) => out.push(0x40 | vsp(bytes)?),
+            IncrementVsp(bytes) => out.push(UNWIND_OPCODE_INC_VSP | vsp(bytes)?),
+            DecrementVsp(bytes) => out.push(UNWIND_OPCODE_DEC_VSP | vsp(bytes)?),
             IncrementVspLarge(bytes) => {
                 if bytes < 0x204 || bytes % 4 != 0 {
                     return Err(invalid());
                 }
-                out.push(0xb2);
+                out.push(UNWIND_OPCODE_INC_VSP_ULEB128);
                 crate::leb128::write_unsigned((bytes - 0x204) >> 2, |b| out.push(b));
             }
-            RefuseToUnwind => out.extend_from_slice(&[0x80, 0x00]),
+            RefuseToUnwind => out.extend_from_slice(&[UNWIND_OPCODE_POP_REG_MASK_R4, 0x00]),
             PopCore { mask } => {
                 if mask != 0 && mask & 0xfff0 == 0 {
-                    out.extend_from_slice(&[0xb1, mask as u8]);
+                    out.extend_from_slice(&[UNWIND_OPCODE_POP_REG_MASK, mask as u8]);
                 } else if mask != 0 && mask & 0xf == 0 {
-                    out.extend_from_slice(&[0x80 | (mask >> 12) as u8, (mask >> 4) as u8]);
+                    out.extend_from_slice(&[
+                        UNWIND_OPCODE_POP_REG_MASK_R4 | (mask >> 12) as u8,
+                        (mask >> 4) as u8,
+                    ]);
                 } else {
                     return Err(invalid());
                 }
@@ -60,43 +64,64 @@ impl UnwindInstruction {
                 if !(4..=11).contains(&last) {
                     return Err(invalid());
                 }
-                out.push(if lr { 0xa8 } else { 0xa0 } | (last - 4));
+                let opcode = if lr {
+                    UNWIND_OPCODE_POP_REG_RANGE_R4_R14
+                } else {
+                    UNWIND_OPCODE_POP_REG_RANGE_R4
+                };
+                out.push(opcode | (last - 4));
             }
             SetVsp(reg) => {
                 if reg >= 16 || reg == 13 || reg == 15 {
                     return Err(invalid());
                 }
-                out.push(0x90 | reg);
+                out.push(UNWIND_OPCODE_SET_VSP | reg);
             }
-            Finish => out.push(0xb0),
-            PopVfpFstmx { first, count } => out.extend_from_slice(&[0xb3, range(first, count)?]),
-            PopVfpFstmxD8 { count } => out.push(0xb8 | short_count(count, 8)?),
+            Finish => out.push(UNWIND_OPCODE_FINISH),
+            PopVfpFstmx { first, count } => out.extend_from_slice(&[
+                UNWIND_OPCODE_POP_VFP_REG_RANGE_FSTMFDX,
+                range(first, count)?,
+            ]),
+            PopVfpFstmxD8 { count } => {
+                out.push(UNWIND_OPCODE_POP_VFP_REG_RANGE_FSTMFDX_D8 | short_count(count, 8)?)
+            }
             PopVfpVpush { first, count } => {
                 if first < 16 {
-                    out.extend_from_slice(&[0xc9, range(first, count)?]);
+                    out.extend_from_slice(&[
+                        UNWIND_OPCODE_POP_VFP_REG_RANGE_VPUSH,
+                        range(first, count)?,
+                    ]);
                 } else {
-                    out.extend_from_slice(&[0xc8, range(first - 16, count)?]);
+                    out.extend_from_slice(&[
+                        UNWIND_OPCODE_POP_VFP_REG_RANGE_VPUSH_D16,
+                        range(first - 16, count)?,
+                    ]);
                 }
             }
-            PopVfpVpushD8 { count } => out.push(0xd0 | short_count(count, 8)?),
-            PopRaAuthCode => out.push(0xb4),
-            UseVspAsRaAuthModifier => out.push(0xb5),
-            PopWmmxWr10 { count } => out.push(0xc0 | short_count(count, 6)?),
-            PopWmmx { first, count } => out.extend_from_slice(&[0xc6, range(first, count)?]),
+            PopVfpVpushD8 { count } => {
+                out.push(UNWIND_OPCODE_POP_VFP_REG_RANGE_VPUSH_D8 | short_count(count, 8)?)
+            }
+            PopRaAuthCode => out.push(UNWIND_OPCODE_POP_RA_AUTH_CODE),
+            UseVspAsRaAuthModifier => out.push(UNWIND_OPCODE_RA_AUTH_MODIFIER_VSP),
+            PopWmmxWr10 { count } => {
+                out.push(UNWIND_OPCODE_POP_WIRELESS_MMX_REG_RANGE_WR10 | short_count(count, 6)?)
+            }
+            PopWmmx { first, count } => out.extend_from_slice(&[
+                UNWIND_OPCODE_POP_WIRELESS_MMX_REG_RANGE,
+                range(first, count)?,
+            ]),
             PopWmmxControl { mask } => {
                 if mask == 0 || mask & 0xf0 != 0 {
                     return Err(invalid());
                 }
-                out.extend_from_slice(&[0xc7, mask]);
+                out.extend_from_slice(&[UNWIND_OPCODE_POP_WIRELESS_MMX_REG_MASK, mask]);
             }
             Spare { opcode, operand } => {
-                // Only accept encodings that decode back to `Spare`.
-                let valid = match (opcode, operand) {
-                    (0x9d | 0x9f | 0xb6 | 0xb7 | 0xca..=0xcf | 0xd8..=0xff, None) => true,
-                    (0xb1 | 0xc7, Some(operand)) => operand == 0 || operand & 0xf0 != 0,
-                    _ => false,
-                };
-                if !valid {
+                // Only accept bytes that the decoder classifies as this spare
+                // encoding, so the two can never disagree.
+                let bytes = [Some(opcode), operand];
+                let mut iter = bytes.iter().flatten().copied();
+                if UnwindInstruction::decode(&mut iter) != Ok(Some(*self)) {
                     return Err(invalid());
                 }
                 out.push(opcode);
@@ -197,6 +222,8 @@ impl UnwindInstruction {
 
 /// The packed form of a frame unwinding description.
 pub(crate) struct PackedUnwindBytes {
+    /// The number of encoded bytes, before padding.
+    pub len: usize,
     /// The first `head_len` bytes, in the low bits of a word.
     pub head: u32,
     /// The remaining bytes, packed into whole words.
@@ -209,22 +236,37 @@ pub(crate) fn extra_unwind_words(len: usize, head_len: usize) -> usize {
     len.saturating_sub(head_len).div_ceil(4)
 }
 
-/// Pack instruction bytes into words, most significant byte first, padding
-/// with *Finish*. The first `head_len` bytes go in the low bits of `head`.
-pub(crate) fn pack_unwind_bytes(bytes: &[u8], head_len: usize) -> PackedUnwindBytes {
+/// Encode instructions and pack them into words, most significant byte
+/// first, padding with *Finish*. The first `head_len` bytes go in the low
+/// bits of `head`.
+///
+/// At most 255 additional words are allowed, since that is the largest
+/// count any entry format can hold.
+pub(crate) fn pack_unwind_instructions(
+    instructions: &[UnwindInstruction],
+    head_len: usize,
+) -> Result<PackedUnwindBytes> {
+    let bytes = encode_unwind_instructions(instructions)?;
     let extra = extra_unwind_words(bytes.len(), head_len);
-    let mut bytes = bytes
+    if extra > 0xff {
+        return Err(Error::TooManyUnwindBytes(bytes.len()));
+    }
+    let mut padded = bytes
         .iter()
         .copied()
-        .chain(core::iter::repeat(crate::constants::UNWIND_OPCODE_FINISH));
+        .chain(core::iter::repeat(UNWIND_OPCODE_FINISH));
     let mut pack = |len: usize| {
         (0..len).fold(0u32, |word, _| {
-            (word << 8) | u32::from(bytes.next().unwrap_or(0))
+            (word << 8) | u32::from(padded.next().unwrap())
         })
     };
     let head = pack(head_len);
     let words = (0..extra).map(|_| pack(4)).collect();
-    PackedUnwindBytes { head, words }
+    Ok(PackedUnwindBytes {
+        len: bytes.len(),
+        head,
+        words,
+    })
 }
 
 /// Encode a sequence of unwinding instructions.

@@ -1,11 +1,11 @@
-use alloc::collections::BTreeMap;
+use alloc::collections::{BTreeMap, BTreeSet};
 use alloc::vec::Vec;
 use core::fmt;
 
 use crate::common::{BaseAddresses, ExTabOffset, SectionId};
 use crate::read::{self, Reader, Section};
 use crate::unwind::UnwindInstruction::{self, Finish};
-use crate::write::unwind::{extra_unwind_words, pack_unwind_bytes};
+use crate::write::unwind::extra_unwind_words;
 use crate::write::{
     Address, CatchType, CompactEntry, Descriptor, Error, ExTabEntry, GenericData, GenericEntry,
     IndexEntry, IndexEntryData, UnwindTable, encode_unwind_instructions,
@@ -55,9 +55,11 @@ impl UnwindTable {
     /// referenced from the index and the entries are contiguous.
     ///
     /// Instructions after the first *Finish* are kept so that each entry
-    /// keeps its length. The exception is a non-minimal uleb128 operand in a
-    /// compact entry, which is re-encoded minimally and may shorten the
-    /// entry; the table stays correct, but later `.ARM.extab` entries move.
+    /// keeps its length; trailing *Finish* padding is dropped, since the
+    /// writer adds it back. A compact entry can still change length in two
+    /// cases: a non-minimal uleb128 operand is re-encoded minimally, and
+    /// bytes after the first *Finish* that do not decode are dropped. The
+    /// table stays correct, but later `.ARM.extab` entries move.
     ///
     /// The extent of a generic-model entry is not encoded, so it is taken to
     /// end where the next referenced entry (or the section) begins. If it
@@ -72,40 +74,39 @@ impl UnwindTable {
         bases: &BaseAddresses,
     ) -> ConvertResult<UnwindTable> {
         let mut index = Vec::new();
-        let mut extab_ids = BTreeMap::new();
+        let mut offsets = BTreeSet::new();
         let mut entries = exidx.entries();
         while let Some(entry) = entries.next()? {
-            if let Some(offset) = entry.extab_offset(bases)? {
-                extab_ids.insert(offset.0, None);
-            }
-            index.push(entry);
+            let offset = entry.extab_offset(bases)?.map(|offset| offset.0);
+            offsets.extend(offset);
+            index.push((entry, offset));
         }
 
         let mut table = UnwindTable::new();
-        let section = extab.reader().to_slice()?;
-        let offsets: Vec<usize> = extab_ids.keys().copied().collect();
-        for (i, &offset) in offsets.iter().enumerate() {
-            let end = offsets.get(i + 1).copied().unwrap_or(section.len());
+        let section_len = extab.reader().len();
+        let mut extab_ids = BTreeMap::new();
+        let mut offsets = offsets.into_iter().peekable();
+        while let Some(offset) = offsets.next() {
+            let end = offsets.peek().copied().unwrap_or(section_len);
             let entry = match extab.entry_at(ExTabOffset(offset))? {
                 read::ExTabEntry::Compact(entry) => {
                     ExTabEntry::Compact(convert_compact(&entry, bases)?)
                 }
                 read::ExTabEntry::Generic(entry) => {
-                    ExTabEntry::Generic(convert_generic(&entry, &section[..end], bases)?)
+                    ExTabEntry::Generic(convert_generic(entry, end, bases)?)
                 }
             };
-            extab_ids.insert(offset, Some(table.add_extab_entry(entry)));
+            extab_ids.insert(offset, table.add_extab_entry(entry));
         }
 
-        for entry in index {
-            let data = match entry.data() {
-                read::ExIdxEntryData::CantUnwind => IndexEntryData::CantUnwind,
-                read::ExIdxEntryData::Inline(compact) => {
+        for (entry, offset) in index {
+            let data = match (entry.data(), offset) {
+                (read::ExIdxEntryData::CantUnwind, _) => IndexEntryData::CantUnwind,
+                (read::ExIdxEntryData::Inline(compact), _) => {
                     IndexEntryData::Inline(convert_compact(compact, bases)?)
                 }
-                read::ExIdxEntryData::ExTab(_) => {
-                    let offset = entry.extab_offset(bases)?.map(|offset| offset.0);
-                    let id = offset.and_then(|offset| extab_ids.get(&offset).copied().flatten());
+                (read::ExIdxEntryData::ExTab(_), offset) => {
+                    let id = offset.and_then(|offset| extab_ids.get(&offset).copied());
                     IndexEntryData::ExTab(id.ok_or(read::Error::OffsetOutOfBounds)?)
                 }
             };
@@ -118,18 +119,12 @@ impl UnwindTable {
     }
 }
 
-fn extab_base(bases: &BaseAddresses) -> Result<u32, read::Error> {
-    bases
-        .extab
-        .ok_or(read::Error::MissingBaseAddress(SectionId::ArmExtab))
-}
-
 fn convert_compact<R: Reader>(
     entry: &read::CompactEntry<R>,
     bases: &BaseAddresses,
 ) -> ConvertResult<CompactEntry> {
-    let head_len = if entry.personality().is_long() { 2 } else { 3 };
-    let instructions = convert_instructions(entry.unwind_bytes()?, head_len)?;
+    let head_len = entry.personality().unwind_head_len();
+    let (instructions, _lossless) = convert_instructions(entry.unwind_bytes()?, head_len)?;
     let mut descriptors = Vec::new();
     if let Some(mut iter) = entry.descriptors()? {
         while let Some(descriptor) = iter.next()? {
@@ -143,48 +138,60 @@ fn convert_compact<R: Reader>(
     })
 }
 
-/// Decode a frame unwinding description so that writing it again needs the
-/// same number of words.
+/// Decode a frame unwinding description, returning the instructions and
+/// whether writing them reproduces the original bytes exactly.
 ///
-/// Instructions after the first *Finish* are kept, since they occupy space
-/// in the entry. Trailing *Finish* padding is removed (keeping one *Finish*)
-/// as long as the writer's own padding restores the same length. If the
-/// bytes after the first *Finish* do not decode, only the instructions up to
-/// it are returned.
+/// All bytes are decoded, including those after the first *Finish*, so the
+/// entry keeps its length. Trailing *Finish* padding that the writer adds
+/// back is dropped. If the bytes after the first *Finish* do not decode, the
+/// instructions up to it are kept and the result is not lossless.
 fn convert_instructions<R: Reader>(
     bytes: read::UnwindBytes<R>,
     head_len: usize,
-) -> read::Result<Vec<UnwindInstruction>> {
+) -> read::Result<(Vec<UnwindInstruction>, bool)> {
+    let original: Vec<u8> = bytes.collect();
+    let mut iter = original.iter().copied();
     let mut instructions = Vec::new();
-    let mut iter = bytes.clone();
+    let mut first_finish = None;
+    let mut decoded_all = true;
     loop {
         match read::decode_unwind_instruction(&mut iter) {
-            Ok(Some(instruction)) => instructions.push(instruction),
+            Ok(Some(instruction)) => {
+                if instruction == Finish && first_finish.is_none() {
+                    first_finish = Some(instructions.len());
+                }
+                instructions.push(instruction);
+            }
             Ok(None) => break,
-            Err(_) => return read::UnwindInstructionIter::new(bytes).collect(),
+            Err(e) => {
+                let end = first_finish.ok_or(e)?;
+                instructions.truncate(end + 1);
+                decoded_all = false;
+                break;
+            }
         }
     }
 
-    let words = |instructions: &[UnwindInstruction]| {
-        encode_unwind_instructions(instructions)
-            .map(|bytes| extra_unwind_words(bytes.len(), head_len))
-            .ok()
-    };
-    let target = words(&instructions);
-    while let [.., Finish, Finish] = instructions[..] {
-        if words(&instructions[..instructions.len() - 1]) != target {
-            break;
-        }
+    // Decoded instructions always re-encode; equality fails only for
+    // non-minimal encodings or when bytes were dropped above.
+    let encoded = encode_unwind_instructions(&instructions).unwrap_or_default();
+    let lossless = decoded_all && encoded == original;
+
+    // Each *Finish* is one byte; drop those the writer's padding restores.
+    let words = extra_unwind_words(encoded.len(), head_len);
+    let mut len = encoded.len();
+    while instructions.last() == Some(&Finish) && extra_unwind_words(len - 1, head_len) == words {
         instructions.pop();
+        len -= 1;
     }
-    Ok(instructions)
+    Ok((instructions, lossless))
 }
 
 fn convert_descriptor<R: Reader>(
     descriptor: read::Descriptor<R>,
     bases: &BaseAddresses,
 ) -> ConvertResult<Descriptor> {
-    let extab = extab_base(bases)?;
+    let extab = read::base_address(bases, SectionId::ArmExtab)?;
     let address = |reference: read::Prel31| Address::Constant(reference.address(extab));
     Ok(match descriptor {
         read::Descriptor::Cleanup { scope, landing_pad } => Descriptor::Cleanup {
@@ -220,38 +227,25 @@ fn convert_descriptor<R: Reader>(
 }
 
 fn convert_generic<R: Reader>(
-    entry: &read::GenericEntry<R>,
-    section: &[u8],
+    mut entry: read::GenericEntry<R>,
+    end: usize,
     bases: &BaseAddresses,
 ) -> ConvertResult<GenericEntry> {
     let personality = Address::Constant(entry.personality_address(bases)?);
-    let start = entry.offset().0 + 4;
-    let raw = || GenericData::Raw(section.get(start..).unwrap_or_default().to_vec());
+    entry.truncate((end - entry.offset().0).saturating_sub(4))?;
 
-    // Use the GCC/LLVM layout only if re-encoding it reproduces the original
-    // bytes, so the LSDA stays where it was and nothing is normalized.
-    let gnu = || -> read::Result<Option<GenericData>> {
-        let bytes = entry.gnu_unwind_bytes()?;
-        let original: Vec<u8> = bytes.clone().collect();
-        let instructions = convert_instructions(bytes, 3)?;
-        let lsda_offset = entry.gnu_lsda_offset()?.0;
-        let Ok(encoded) = encode_unwind_instructions(&instructions) else {
-            return Ok(None);
-        };
-        let packed = pack_unwind_bytes(&encoded, 3);
-        let repacked = (0..3)
-            .rev()
-            .map(|i| (packed.head >> (8 * i)) as u8)
-            .chain(packed.words.iter().flat_map(|word| word.to_be_bytes()));
-        if !repacked.eq(original.iter().copied()) || lsda_offset > section.len() {
-            return Ok(None);
-        }
-        Ok(Some(GenericData::Gnu {
-            instructions,
-            lsda: section[lsda_offset..].to_vec(),
-        }))
+    // Use the GCC/LLVM layout only if it re-encodes to the same bytes, so
+    // the LSDA stays where it was and nothing is normalized.
+    let gnu = || -> Option<GenericData> {
+        let (instructions, lossless) =
+            convert_instructions(entry.gnu_unwind_bytes().ok()?, 3).ok()?;
+        let lsda = entry.gnu_lsda().ok()?.to_slice().ok()?.into_owned();
+        lossless.then_some(GenericData::Gnu { instructions, lsda })
     };
-    let data = gnu().ok().flatten().unwrap_or_else(raw);
+    let data = match gnu() {
+        Some(data) => data,
+        None => GenericData::Raw(entry.data().to_slice()?.into_owned()),
+    };
     Ok(GenericEntry { personality, data })
 }
 
@@ -259,11 +253,8 @@ fn convert_generic<R: Reader>(
 mod tests {
     use super::*;
     use crate::endianity::LittleEndian;
+    use crate::test_util::words_le;
     use crate::write::{EndianVec, Sections};
-
-    fn words_le(words: &[u32]) -> Vec<u8> {
-        words.iter().flat_map(|w| w.to_le_bytes()).collect()
-    }
 
     /// Unusual but valid unwinding descriptions survive a round trip byte for
     /// byte, so later `.ARM.extab` entries do not move.
@@ -317,16 +308,13 @@ mod tests {
                 Finish,
             ]
         );
-        // Plain padding is reduced to a single Finish.
+        // Plain padding is dropped, since the writer adds it back.
         let ExTabEntry::Compact(compact) = table.extab_entry(table_id(&table, 1)) else {
             panic!("expected compact entry");
         };
         assert_eq!(
             compact.instructions,
-            [
-                UnwindInstruction::PopCoreRange { last: 4, lr: true },
-                Finish
-            ]
+            [UnwindInstruction::PopCoreRange { last: 4, lr: true }]
         );
         // The non-minimal uleb128 would be normalized, so the generic entry
         // is kept as raw data.

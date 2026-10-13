@@ -100,6 +100,13 @@ impl PersonalityIndex {
         self == Self::LU16 || self == Self::LU32
     }
 
+    /// Returns the number of unwinding instruction bytes in the first word of
+    /// an entry: 3 for the short format, 2 for the long format.
+    #[inline]
+    pub fn unwind_head_len(self) -> usize {
+        if self.is_long() { 2 } else { 3 }
+    }
+
     /// Returns true if this routine uses 32-bit scopes in its descriptors.
     #[inline]
     pub fn has_wide_scopes(self) -> bool {

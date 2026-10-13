@@ -169,28 +169,138 @@ impl UnwindInstruction {
     }
 }
 
-struct CoreRegisters(u16);
+/// Why an unwinding instruction could not be decoded.
+#[cfg(any(feature = "read", feature = "write"))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum DecodeError {
+    /// A multi-byte instruction was truncated.
+    Truncated,
+    /// The uleb128 operand was truncated or too large.
+    BadUleb128,
+}
 
-impl fmt::Display for CoreRegisters {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str("{")?;
-        let mut first = true;
-        for reg in 0..16 {
-            if self.0 & (1 << reg) == 0 {
-                continue;
+#[cfg(any(feature = "read", feature = "write"))]
+impl UnwindInstruction {
+    /// Decode one instruction from a byte stream, returning `Ok(None)` at the
+    /// end of the stream.
+    ///
+    /// This is the single definition of the opcode table: the writer
+    /// validates [`Spare`](Self::Spare) encodings against it.
+    pub(crate) fn decode<I>(bytes: &mut I) -> Result<Option<Self>, DecodeError>
+    where
+        I: Iterator<Item = u8>,
+    {
+        use crate::constants::*;
+        use UnwindInstruction::*;
+
+        let Some(op) = bytes.next() else {
+            return Ok(None);
+        };
+        let mut operand = || bytes.next().ok_or(DecodeError::Truncated);
+        let range = |byte: u8, base: u8| (base + (byte >> 4), (byte & 0xf) + 1);
+        let count = (op & 0x7) + 1;
+        let spare = Spare {
+            opcode: op,
+            operand: None,
+        };
+
+        let instruction = match op {
+            UNWIND_OPCODE_INC_VSP..=0x3f => IncrementVsp((u32::from(op & 0x3f) << 2) + 4),
+            UNWIND_OPCODE_DEC_VSP..=0x7f => DecrementVsp((u32::from(op & 0x3f) << 2) + 4),
+            UNWIND_OPCODE_POP_REG_MASK_R4..=0x8f => {
+                let low = operand()?;
+                match (u16::from(op & 0xf) << 12) | (u16::from(low) << 4) {
+                    0 => RefuseToUnwind,
+                    mask => PopCore { mask },
+                }
             }
-            if !first {
-                f.write_str(", ")?;
+            UNWIND_OPCODE_RESERVED_ARM_MOVE | UNWIND_OPCODE_RESERVED_WMMX_MOVE => spare,
+            UNWIND_OPCODE_SET_VSP..=0x9f => SetVsp(op & 0xf),
+            UNWIND_OPCODE_POP_REG_RANGE_R4..=0xa7 => PopCoreRange {
+                last: 4 + (op & 0x7),
+                lr: false,
+            },
+            UNWIND_OPCODE_POP_REG_RANGE_R4_R14..=0xaf => PopCoreRange {
+                last: 4 + (op & 0x7),
+                lr: true,
+            },
+            UNWIND_OPCODE_FINISH => Finish,
+            UNWIND_OPCODE_POP_REG_MASK => match operand()? {
+                mask @ 0x01..=0x0f => PopCore {
+                    mask: u16::from(mask),
+                },
+                operand => Spare {
+                    opcode: op,
+                    operand: Some(operand),
+                },
+            },
+            UNWIND_OPCODE_INC_VSP_ULEB128 => {
+                let value = crate::leb128::read_unsigned(bytes).ok_or(DecodeError::BadUleb128)?;
+                let increment = value
+                    .checked_mul(4)
+                    .and_then(|v| v.checked_add(0x204))
+                    .ok_or(DecodeError::BadUleb128)?;
+                IncrementVspLarge(increment)
             }
-            first = false;
-            match reg {
-                13 => f.write_str("sp")?,
-                14 => f.write_str("lr")?,
-                15 => f.write_str("pc")?,
-                _ => write!(f, "r{reg}")?,
+            UNWIND_OPCODE_POP_VFP_REG_RANGE_FSTMFDX => {
+                let (first, count) = range(operand()?, 0);
+                PopVfpFstmx { first, count }
             }
+            UNWIND_OPCODE_POP_RA_AUTH_CODE => PopRaAuthCode,
+            UNWIND_OPCODE_RA_AUTH_MODIFIER_VSP => UseVspAsRaAuthModifier,
+            0xb6 | 0xb7 => spare,
+            UNWIND_OPCODE_POP_VFP_REG_RANGE_FSTMFDX_D8..=0xbf => PopVfpFstmxD8 { count },
+            UNWIND_OPCODE_POP_WIRELESS_MMX_REG_RANGE_WR10..=0xc5 => PopWmmxWr10 { count },
+            UNWIND_OPCODE_POP_WIRELESS_MMX_REG_RANGE => {
+                let (first, count) = range(operand()?, 0);
+                PopWmmx { first, count }
+            }
+            UNWIND_OPCODE_POP_WIRELESS_MMX_REG_MASK => match operand()? {
+                mask @ 0x01..=0x0f => PopWmmxControl { mask },
+                operand => Spare {
+                    opcode: op,
+                    operand: Some(operand),
+                },
+            },
+            UNWIND_OPCODE_POP_VFP_REG_RANGE_VPUSH_D16 => {
+                let (first, count) = range(operand()?, 16);
+                PopVfpVpush { first, count }
+            }
+            UNWIND_OPCODE_POP_VFP_REG_RANGE_VPUSH => {
+                let (first, count) = range(operand()?, 0);
+                PopVfpVpush { first, count }
+            }
+            UNWIND_OPCODE_POP_VFP_REG_RANGE_VPUSH_D8..=0xd7 => PopVfpVpushD8 { count },
+            0xca..=0xcf | 0xd8..=0xff => spare,
+        };
+        Ok(Some(instruction))
+    }
+}
+
+/// Write the registers whose bits are set in `mask` as `{a, b, ...}`.
+fn write_register_list(
+    f: &mut fmt::Formatter<'_>,
+    mask: u16,
+    name: impl Fn(&mut fmt::Formatter<'_>, u32) -> fmt::Result,
+) -> fmt::Result {
+    f.write_str("{")?;
+    let mut first = true;
+    for reg in (0..16).filter(|reg| mask & (1 << reg) != 0) {
+        if !first {
+            f.write_str(", ")?;
         }
-        f.write_str("}")
+        first = false;
+        name(f, reg)?;
+    }
+    f.write_str("}")
+}
+
+fn write_core_register(f: &mut fmt::Formatter<'_>, reg: u32) -> fmt::Result {
+    match reg {
+        13 => f.write_str("sp"),
+        14 => f.write_str("lr"),
+        15 => f.write_str("pc"),
+        _ => write!(f, "r{reg}"),
     }
 }
 
@@ -216,9 +326,15 @@ impl fmt::Display for UnwindInstruction {
             DecrementVsp(bytes) => write!(f, "vsp = vsp - {bytes}"),
             IncrementVspLarge(bytes) => write!(f, "vsp = vsp + {bytes}"),
             RefuseToUnwind => f.write_str("refuse to unwind"),
-            PopCore { mask } => write!(f, "pop {}", CoreRegisters(mask)),
+            PopCore { mask } => {
+                f.write_str("pop ")?;
+                write_register_list(f, mask, write_core_register)
+            }
             PopCoreRange { last, lr } => match self.popped_core_registers() {
-                Some(mask) => write!(f, "pop {}", CoreRegisters(mask)),
+                Some(mask) => {
+                    f.write_str("pop ")?;
+                    write_register_list(f, mask, write_core_register)
+                }
                 None => {
                     let lr = if lr { ", lr" } else { "" };
                     write!(f, "pop {{r4-r{last}{lr}}} (invalid range)")
@@ -237,18 +353,8 @@ impl fmt::Display for UnwindInstruction {
             PopWmmxWr10 { count } => write!(f, "pop {}", RegisterRange("wR", 10, count)),
             PopWmmx { first, count } => write!(f, "pop {}", RegisterRange("wR", first, count)),
             PopWmmxControl { mask } => {
-                f.write_str("pop {")?;
-                let mut first = true;
-                for reg in 0..4 {
-                    if mask & (1 << reg) != 0 {
-                        if !first {
-                            f.write_str(", ")?;
-                        }
-                        first = false;
-                        write!(f, "wCGR{reg}")?;
-                    }
-                }
-                f.write_str("}")
+                f.write_str("pop ")?;
+                write_register_list(f, u16::from(mask), |f, reg| write!(f, "wCGR{reg}"))
             }
             Spare {
                 opcode,
