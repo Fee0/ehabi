@@ -174,10 +174,17 @@ impl UnwindInstruction {
     /// # Errors
     ///
     /// Returns [`Error::InvalidUnwindOperand`] if `bytes` is not a multiple of
-    /// 4.
+    /// 4, and [`Error::TooManyUnwindBytes`] if the instructions would not fit
+    /// in any entry.
     pub fn vsp_sub(bytes: u32) -> Result<Vec<UnwindInstruction>> {
         if !bytes.is_multiple_of(4) {
             return Err(Error::InvalidUnwindOperand(u64::from(bytes)));
+        }
+        // One byte per 0x100; reject what no entry could hold before
+        // building it.
+        let count = bytes.div_ceil(0x100) as usize;
+        if count > MAX_UNWIND_BYTES {
+            return Err(Error::TooManyUnwindBytes(count));
         }
         let mut out = Vec::new();
         let mut remaining = bytes;
@@ -256,6 +263,10 @@ pub(crate) struct PackedUnwindBytes {
     /// The remaining bytes, packed into whole words.
     pub words: Vec<u32>,
 }
+
+/// The most bytes of unwinding instructions any entry can hold: 3 in the
+/// first word of a generic entry, and 255 additional words.
+const MAX_UNWIND_BYTES: usize = 3 + 255 * 4;
 
 /// Return the number of words needed after the first `head_len` bytes to
 /// hold `len` bytes.
@@ -406,6 +417,10 @@ mod tests {
         assert_eq!(
             UnwindInstruction::vsp_add(5),
             Err(Error::InvalidUnwindOperand(5))
+        );
+        assert_eq!(
+            UnwindInstruction::vsp_sub(0xffff_fffc),
+            Err(Error::TooManyUnwindBytes(0x0100_0000))
         );
         assert_eq!(
             UnwindInstruction::vsp_sub(0x104),

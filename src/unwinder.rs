@@ -325,7 +325,8 @@ impl<R: Reader> Module<R> {
     /// # Errors
     ///
     /// Returns [`Error::MissingRegister`] if the program counter is unknown,
-    /// [`Error::NoUnwindInfo`] if no index entry covers it,
+    /// [`Error::NoUnwindInfo`] if no index entry covers it (or if it is 0 or
+    /// 1 in a frame other than the first),
     /// [`Error::CantUnwind`] for an `EXIDX_CANTUNWIND` entry, [`Error::Read`]
     /// if the entry cannot be parsed, and the errors of [`execute`].
     pub fn unwind_frame<M: Memory + ?Sized>(
@@ -338,7 +339,8 @@ impl<R: Reader> Module<R> {
         let address = if is_first_frame {
             pc & !1
         } else {
-            (pc & !1).wrapping_sub(1)
+            // A return address of 0 marks the end of the stack.
+            (pc & !1).checked_sub(1).ok_or(Error::NoUnwindInfo(pc))?
         };
         let entry = self
             .exidx
@@ -662,5 +664,16 @@ mod tests {
             module.unwind_frame(&before, true, &mut memory),
             Err(Error::NoUnwindInfo(0x0ff0))
         );
+
+        // A return address of 0 or 1 ends the stack rather than wrapping
+        // around to the last entry.
+        for pc in [0, 1] {
+            let mut end = f.clone();
+            end.set_core(Registers::PC, pc);
+            assert_eq!(
+                module.unwind_frame(&end, false, &mut memory),
+                Err(Error::NoUnwindInfo(pc))
+            );
+        }
     }
 }

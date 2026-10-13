@@ -101,27 +101,32 @@ impl<T: RelocateWriter> Writer for T {
         // The addend is stored in place, where the linker sign-extends the
         // low 31 bits, so it must fit.
         let addend_bits = prel31_encode(addend).ok_or(Error::Prel31OutOfRange(addend))?;
+        // Record the relocation only once its word has been written.
+        let offset = self.len();
+        self.writer_mut()
+            .write_u32(addend_bits | (u32::from(high_bit) << 31))?;
         self.relocate(Relocation {
-            offset: self.len(),
+            offset,
             kind: RelocationKind::Prel31,
             target,
             addend,
         });
-        let word = addend_bits | (u32::from(high_bit) << 31);
-        self.writer_mut().write_u32(word)
+        Ok(())
     }
 
     fn write_target2(&mut self, target: Address) -> Result<()> {
         match target {
             Address::Constant(value) => self.writer_mut().write_u32(value),
             Address::Symbol { symbol, addend } => {
+                let offset = self.len();
+                self.writer_mut().write_u32(addend.cast_unsigned())?;
                 self.relocate(Relocation {
-                    offset: self.len(),
+                    offset,
                     kind: RelocationKind::Target2,
                     target: RelocationTarget::Symbol(symbol),
                     addend: i64::from(addend),
                 });
-                self.writer_mut().write_u32(addend.cast_unsigned())
+                Ok(())
             }
         }
     }
@@ -144,13 +149,13 @@ mod tests {
     use crate::write::EndianVec;
     use alloc::vec::Vec;
 
-    struct Section {
-        writer: EndianVec<LittleEndian>,
+    struct Section<W> {
+        writer: W,
         relocations: Vec<Relocation>,
     }
 
-    impl RelocateWriter for Section {
-        type Writer = EndianVec<LittleEndian>;
+    impl<W: Writer> RelocateWriter for Section<W> {
+        type Writer = W;
 
         fn writer(&self) -> &Self::Writer {
             &self.writer
@@ -163,6 +168,53 @@ mod tests {
         fn relocate(&mut self, relocation: Relocation) {
             self.relocations.push(relocation);
         }
+    }
+
+    /// A writer with no room left.
+    struct Full;
+
+    impl Writer for Full {
+        type Endian = LittleEndian;
+
+        fn endian(&self) -> LittleEndian {
+            LittleEndian
+        }
+
+        fn len(&self) -> usize {
+            0
+        }
+
+        fn write(&mut self, _bytes: &[u8]) -> Result<()> {
+            Err(Error::OffsetOutOfBounds)
+        }
+
+        fn write_at(&mut self, _offset: usize, _bytes: &[u8]) -> Result<()> {
+            Err(Error::OffsetOutOfBounds)
+        }
+    }
+
+    #[test]
+    fn test_failed_write_records_no_relocation() {
+        let mut w = Section {
+            writer: Full,
+            relocations: Vec::new(),
+        };
+        let symbol = Address::Symbol {
+            symbol: 1,
+            addend: 0,
+        };
+        let bases = BaseAddresses::default();
+        assert!(
+            w.write_prel31(
+                SectionId::ArmExidx,
+                Reference::Address(symbol),
+                false,
+                &bases
+            )
+            .is_err()
+        );
+        assert!(w.write_target2(symbol).is_err());
+        assert_eq!(w.relocations, []);
     }
 
     #[test]

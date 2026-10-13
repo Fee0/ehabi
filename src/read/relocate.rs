@@ -107,7 +107,7 @@ impl<R: Reader, T: Relocate> RelocateReader<R, T> {
         }
     }
 
-    /// Get a reference to the underlying section reader.
+    /// Return the underlying reader, at the current position.
     pub fn inner(&self) -> &R {
         &self.reader
     }
