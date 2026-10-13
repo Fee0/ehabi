@@ -75,6 +75,12 @@ impl<R: Reader> UnwindInstructionIter<R> {
     ///
     /// Returns `Ok(None)` when there are no more instructions. An implicit
     /// *Finish* follows the last instruction; it is not returned.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::TruncatedUnwindInstruction`] if the bytes end within an
+    /// instruction, and [`Error::BadUnsignedLeb128`] if a uleb128 operand
+    /// overflows. After an error, the iterator returns `Ok(None)`.
     pub fn next(&mut self) -> Result<Option<UnwindInstruction>> {
         if self.done {
             return Ok(None);
@@ -92,6 +98,12 @@ impl_iterators!(UnwindInstructionIter, UnwindInstruction);
 /// Decode one unwinding instruction from a byte stream.
 ///
 /// Returns `Ok(None)` at the end of the stream.
+///
+/// # Errors
+///
+/// Returns [`Error::TruncatedUnwindInstruction`] if the stream ends within an
+/// instruction, and [`Error::BadUnsignedLeb128`] if a uleb128 operand
+/// overflows.
 pub fn decode_unwind_instruction<I>(bytes: &mut I) -> Result<Option<UnwindInstruction>>
 where
     I: Iterator<Item = u8>,

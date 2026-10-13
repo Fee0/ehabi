@@ -23,6 +23,7 @@ pub struct ExTabEntryId(usize);
 
 impl UnwindTable {
     /// Create a new, empty table.
+    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
@@ -39,6 +40,7 @@ impl UnwindTable {
     /// # Panics
     ///
     /// Panics if `id` is invalid.
+    #[must_use]
     pub fn extab_entry(&self, id: ExTabEntryId) -> &ExTabEntry {
         &self.extab[id.0]
     }
@@ -53,6 +55,7 @@ impl UnwindTable {
     }
 
     /// Return the number of `.ARM.extab` entries.
+    #[must_use]
     pub fn extab_entry_count(&self) -> usize {
         self.extab.len()
     }
@@ -67,6 +70,7 @@ impl UnwindTable {
     }
 
     /// Return the `.ARM.exidx` entries.
+    #[must_use]
     pub fn index_entries(&self) -> &[IndexEntry] {
         &self.index
     }
@@ -104,6 +108,16 @@ impl UnwindTable {
     /// word, and the target section of references between the sections. A
     /// writer that records relocations does not need addresses for symbol
     /// and section references.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if an entry cannot be encoded:
+    /// [`Error::UnsupportedPersonality`] for a reserved personality routine,
+    /// [`Error::TooManyUnwindBytes`] if the instructions do not fit,
+    /// [`Error::InlineEntryHasDescriptors`], [`Error::InvalidScope`],
+    /// [`Error::TooManyTypeInfos`], or [`Error::InvalidExTabEntryId`] for an
+    /// index entry that refers to an unknown `.ARM.extab` entry. Also returns
+    /// the errors of [`Writer::write_prel31`] and of the section writers.
     pub fn write<W: Writer>(
         &self,
         sections: &mut Sections<W>,
@@ -186,6 +200,7 @@ impl ExTabOffsets {
     /// # Panics
     ///
     /// Panics if `id` is invalid.
+    #[must_use]
     pub fn get(&self, id: ExTabEntryId) -> ExTabOffset {
         self.0[id.0]
     }
@@ -244,6 +259,7 @@ pub struct CompactEntry {
 
 impl CompactEntry {
     /// Create an entry with no instructions or descriptors.
+    #[must_use]
     pub fn new(personality: PersonalityIndex) -> Self {
         CompactEntry {
             personality,
@@ -253,6 +269,7 @@ impl CompactEntry {
     }
 
     /// Return true if this entry can be stored inline in `.ARM.exidx`.
+    #[must_use]
     pub fn can_inline(&self) -> bool {
         self.descriptors.is_empty() && self.encode_unwind_words(true).is_ok()
     }

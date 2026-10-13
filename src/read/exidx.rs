@@ -70,6 +70,12 @@ impl<R: Reader> ExIdx<R> {
     }
 
     /// Parse the entry with the given index.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::OffsetOutOfBounds`] if `index` is not less than
+    /// [`len`](Self::len), and [`Error::InvalidExIdxFunctionWord`] if bit 31 of
+    /// the function word is set.
     pub fn entry(&self, index: usize) -> Result<ExIdxEntry<R>> {
         if index >= self.len() {
             return Err(Error::OffsetOutOfBounds);
@@ -79,6 +85,12 @@ impl<R: Reader> ExIdx<R> {
     }
 
     /// Parse the entry at the given section offset.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::OffsetOutOfBounds`] if `offset` is not a multiple of 8
+    /// or is outside the section, and [`Error::InvalidExIdxFunctionWord`] if
+    /// bit 31 of the function word is set.
     pub fn entry_at(&self, offset: ExIdxOffset) -> Result<ExIdxEntry<R>> {
         let offset = offset.0;
         if offset % 8 != 0 {
@@ -98,6 +110,12 @@ impl<R: Reader> ExIdx<R> {
     /// the final function.
     ///
     /// `bases.exidx` must be set.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::MissingBaseAddress`] if `bases.exidx` is not set, and
+    /// [`Error::InvalidExIdxFunctionWord`] if bit 31 of a function word visited
+    /// by the search is set.
     pub fn find(&self, address: u32, bases: &BaseAddresses) -> Result<Option<ExIdxEntry<R>>> {
         let exidx = base_address(bases, SectionId::ArmExidx)?;
         // Only the function word is needed to compare, so read just that and
@@ -132,6 +150,13 @@ pub struct ExIdxEntryIter<R: Reader> {
 
 impl<R: Reader> ExIdxEntryIter<R> {
     /// Advance the iterator and return the next entry.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::InvalidExIdxLength`] if the section ends with an
+    /// incomplete entry, and [`Error::InvalidExIdxFunctionWord`] if bit 31 of
+    /// the function word is set. After an error, the iterator returns
+    /// `Ok(None)`.
     pub fn next(&mut self) -> Result<Option<ExIdxEntry<R>>> {
         if self.input.is_empty() {
             return Ok(None);
@@ -215,6 +240,10 @@ impl<R: Reader> ExIdxEntry<R> {
     /// Return the address of the start of the function.
     ///
     /// `bases.exidx` must be set.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::MissingBaseAddress`] if `bases.exidx` is not set.
     pub fn function_address(&self, bases: &BaseAddresses) -> Result<u32> {
         Ok(self
             .function
@@ -230,6 +259,11 @@ impl<R: Reader> ExIdxEntry<R> {
     /// Return the offset of the `.ARM.extab` entry, if this entry refers to one.
     ///
     /// `bases.exidx` and `bases.extab` must be set.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::MissingBaseAddress`] if the entry refers to
+    /// `.ARM.extab` and `bases.exidx` or `bases.extab` is not set.
     pub fn extab_offset(&self, bases: &BaseAddresses) -> Result<Option<ExTabOffset>> {
         let ExIdxEntryData::ExTab(reference) = self.data else {
             return Ok(None);
@@ -245,6 +279,12 @@ impl<R: Reader> ExIdxEntry<R> {
     ///
     /// `bases.exidx` and `bases.extab` must be set if the entry refers to
     /// `.ARM.extab`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::MissingBaseAddress`] if a required base address is not
+    /// set, and the errors of [`ExTab::entry_at`] if the referenced
+    /// `.ARM.extab` entry cannot be parsed.
     pub fn resolve(&self, extab: &ExTab<R>, bases: &BaseAddresses) -> Result<UnwindEntry<R>> {
         Ok(match &self.data {
             ExIdxEntryData::CantUnwind => UnwindEntry::CantUnwind,

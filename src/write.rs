@@ -36,7 +36,7 @@
 //! // push {r4-r7, lr}; sub sp, sp, #16
 //! let mut entry = CompactEntry::new(PersonalityIndex::SU16);
 //! entry.instructions.extend(UnwindInstruction::vsp_add(16)?);
-//! entry.instructions.extend(UnwindInstruction::pop_core(0x40f0)?);
+//! entry.instructions.extend(UnwindInstruction::pop_core(0x40f0));
 //! table.add_index_entry(IndexEntry {
 //!     function: Address::Constant(0x8000),
 //!     data: IndexEntryData::Inline(entry),

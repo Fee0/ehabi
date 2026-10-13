@@ -46,6 +46,11 @@ impl<R> From<R> for ExTab<R> {
 
 impl<R: Reader> ExTab<R> {
     /// Parse the entry at the given offset.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::UnalignedExTabOffset`] if `offset` is not a multiple of
+    /// 4, and [`Error::OffsetOutOfBounds`] if it is outside the section.
     pub fn entry_at(&self, offset: ExTabOffset) -> Result<ExTabEntry<R>> {
         let offset = offset.0;
         if offset % 4 != 0 {
@@ -188,6 +193,13 @@ impl<R: Reader> CompactEntry<R> {
 
     /// Return the bytes of the frame unwinding description, including any
     /// trailing padding.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::UnsupportedPersonality`] for a reserved personality
+    /// routine, [`Error::InlineEntryHasExtraWords`] if an inline entry has a
+    /// non-zero word count, and [`Error::UnexpectedEof`] if the words extend
+    /// past the end of the section.
     pub fn unwind_bytes(&self) -> Result<UnwindBytes<R>> {
         let words = self.extra_words()?;
         let mut data = self.data.clone();
@@ -197,12 +209,22 @@ impl<R: Reader> CompactEntry<R> {
     }
 
     /// Return an iterator over the frame unwinding instructions.
+    ///
+    /// # Errors
+    ///
+    /// Returns the errors of [`unwind_bytes`](Self::unwind_bytes).
     pub fn instructions(&self) -> Result<UnwindInstructionIter<R>> {
         Ok(UnwindInstructionIter::new(self.unwind_bytes()?))
     }
 
     /// Return an iterator over the descriptors, or `None` for inline entries,
     /// which cannot have descriptors.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::UnsupportedPersonality`] for a reserved personality
+    /// routine, and [`Error::UnexpectedEof`] if the unwinding instructions
+    /// extend past the end of the section.
     pub fn descriptors(&self) -> Result<Option<DescriptorIter<R>>> {
         if self.is_inline() {
             return Ok(None);
@@ -249,6 +271,10 @@ impl<R: Reader> GenericEntry<R> {
     /// Return the address of the personality routine.
     ///
     /// `bases.extab` must be set.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::MissingBaseAddress`] if `bases.extab` is not set.
     pub fn personality_address(&self, bases: &BaseAddresses) -> Result<u32> {
         let extab = base_address(bases, SectionId::ArmExtab)?;
         Ok(self.personality.address(extab))
@@ -271,6 +297,11 @@ impl<R: Reader> GenericEntry<R> {
 
     /// Return the bytes of the frame unwinding description, using the
     /// GCC/LLVM layout.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::UnexpectedEof`] if the entry is shorter than its word
+    /// count requires.
     pub fn gnu_unwind_bytes(&self) -> Result<UnwindBytes<R>> {
         let mut data = self.data.clone();
         let word = data.read_u32()?;
@@ -280,6 +311,11 @@ impl<R: Reader> GenericEntry<R> {
 
     /// Return an iterator over the frame unwinding instructions, using the
     /// GCC/LLVM layout.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::UnexpectedEof`] if the entry is shorter than its word
+    /// count requires.
     pub fn gnu_instructions(&self) -> Result<UnwindInstructionIter<R>> {
         Ok(UnwindInstructionIter::new(self.gnu_unwind_bytes()?))
     }
@@ -289,6 +325,11 @@ impl<R: Reader> GenericEntry<R> {
     /// The returned reader extends to the end of the section. For C++ this
     /// is in the `.gcc_except_table` format, with `R_ARM_TARGET2` type
     /// references.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::UnexpectedEof`] if the entry is shorter than its word
+    /// count requires.
     pub fn gnu_lsda(&self) -> Result<R> {
         let mut data = self.data.clone();
         let word = data.read_u32()?;
@@ -298,6 +339,11 @@ impl<R: Reader> GenericEntry<R> {
 
     /// Return the offset of the language-specific data area within
     /// `.ARM.extab`, using the GCC/LLVM layout.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::UnexpectedEof`] if the entry is shorter than its word
+    /// count requires.
     pub fn gnu_lsda_offset(&self) -> Result<ExTabOffset> {
         Ok(ExTabOffset(self.gnu_lsda()?.offset_from(&self.section)))
     }
@@ -354,7 +400,7 @@ mod tests {
     fn test_generic_gnu() {
         let data = words_le(&[
             // personality at extab - 0x100
-            (-0x100i32) as u32 & 0x7fff_ffff,
+            (-0x100i32).cast_unsigned() & 0x7fff_ffff,
             // One extra word: vsp = r11; pop {r10, lr}; pop {r4-r11, lr}; finish.
             0x019b_8440,
             0x84ff_b0b0,

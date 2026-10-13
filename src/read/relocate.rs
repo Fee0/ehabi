@@ -18,6 +18,10 @@ pub trait Relocate {
     /// Relocate a word which was read from the given section offset.
     ///
     /// Return the word unchanged if there is no relocation at this offset.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the relocation at `offset` cannot be applied.
     fn relocate_word(&self, offset: usize, word: u32) -> Result<u32>;
 }
 
@@ -26,8 +30,9 @@ pub trait Relocate {
 /// The result is `(word & 0x8000_0000) | ((S + A - P) & 0x7fff_ffff)`, where
 /// `S` is `symbol`, `P` is `place` (the address of the word), and the addend
 /// `A` is the sign-extended low 31 bits of `word`.
+#[must_use]
 pub fn relocate_prel31(word: u32, symbol: u32, place: u32) -> u32 {
-    let addend = crate::common::prel31_value(word) as u32;
+    let addend = crate::common::prel31_value(word).cast_unsigned();
     let value = symbol.wrapping_add(addend).wrapping_sub(place);
     (word & 0x8000_0000) | (value & 0x7fff_ffff)
 }
@@ -42,6 +47,43 @@ impl<T: Relocate + ?Sized> Relocate for &T {
 ///
 /// This is useful for reading sections in a relocatable object file. It is
 /// generally not needed for executables and shared libraries.
+///
+/// ```
+/// use ehabi::read::{EndianSlice, ExIdx, Relocate, RelocateReader, Result, relocate_prel31};
+/// use ehabi::{BaseAddresses, LittleEndian};
+///
+/// /// The relocations of `.ARM.exidx`, for a layout that places the section
+/// /// at `exidx_address` and the function `f` at 0x1000.
+/// #[derive(Clone)]
+/// struct Relocations {
+///     exidx_address: u32,
+/// }
+///
+/// impl Relocate for Relocations {
+///     fn relocate_word(&self, offset: usize, word: u32) -> Result<u32> {
+///         Ok(match offset {
+///             // R_ARM_PREL31 against `f`.
+///             0 => relocate_prel31(word, 0x1000, self.exidx_address + offset as u32),
+///             _ => word,
+///         })
+///     }
+/// }
+///
+/// # fn main() -> Result<()> {
+/// // One index entry: a function word holding only the addend (0), and
+/// // EXIDX_CANTUNWIND.
+/// let data = [0, 0, 0, 0, 1, 0, 0, 0];
+/// let exidx_address = 0x2000;
+/// let exidx = ExIdx::from(RelocateReader::new(
+///     EndianSlice::new(&data, LittleEndian),
+///     Relocations { exidx_address },
+/// ));
+///
+/// let bases = BaseAddresses::default().set_exidx(exidx_address);
+/// assert_eq!(exidx.entry(0)?.function_address(&bases)?, 0x1000);
+/// # Ok(())
+/// # }
+/// ```
 #[derive(Clone)]
 pub struct RelocateReader<R: Reader, T: Relocate> {
     section: R,
@@ -100,7 +142,7 @@ where
 
     #[inline]
     fn empty(&mut self) {
-        self.reader.empty()
+        self.reader.empty();
     }
 
     #[inline]

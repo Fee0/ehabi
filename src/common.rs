@@ -14,6 +14,7 @@ impl SectionId {
     ///
     /// Object producers may append further characters to these names, for
     /// example `.ARM.exidx.text.foo`.
+    #[must_use]
     pub fn name(self) -> &'static str {
         match self {
             SectionId::ArmExidx => ".ARM.exidx",
@@ -49,6 +50,7 @@ pub struct BaseAddresses {
 impl BaseAddresses {
     /// Set the `.ARM.exidx` section address.
     #[inline]
+    #[must_use]
     pub fn set_exidx(mut self, address: u32) -> Self {
         self.exidx = Some(address);
         self
@@ -56,6 +58,7 @@ impl BaseAddresses {
 
     /// Set the `.ARM.extab` section address.
     #[inline]
+    #[must_use]
     pub fn set_extab(mut self, address: u32) -> Self {
         self.extab = Some(address);
         self
@@ -63,6 +66,7 @@ impl BaseAddresses {
 
     /// Return the address for the given section, if known.
     #[inline]
+    #[must_use]
     pub fn get(&self, section: SectionId) -> Option<u32> {
         match section {
             SectionId::ArmExidx => self.exidx,
@@ -90,12 +94,14 @@ impl PersonalityIndex {
     /// Returns true if the format of this personality routine's data is defined
     /// by the EHABI (indices 0, 1 and 2).
     #[inline]
+    #[must_use]
     pub fn is_defined(self) -> bool {
         self.0 <= 2
     }
 
     /// Returns true if this routine uses the long unwinding description format.
     #[inline]
+    #[must_use]
     pub fn is_long(self) -> bool {
         self == Self::LU16 || self == Self::LU32
     }
@@ -103,17 +109,20 @@ impl PersonalityIndex {
     /// Returns the number of unwinding instruction bytes in the first word of
     /// an entry: 3 for the short format, 2 for the long format.
     #[inline]
+    #[must_use]
     pub fn unwind_head_len(self) -> usize {
         if self.is_long() { 2 } else { 3 }
     }
 
     /// Returns true if this routine uses 32-bit scopes in its descriptors.
     #[inline]
+    #[must_use]
     pub fn has_wide_scopes(self) -> bool {
         self == Self::LU32
     }
 
     /// Returns the symbol name of the personality routine, if it is defined.
+    #[must_use]
     pub fn routine_name(self) -> Option<&'static str> {
         match self.0 {
             0 => Some("__aeabi_unwind_cpp_pr0"),
@@ -149,7 +158,8 @@ pub struct Scope {
 impl Scope {
     /// Returns true if the given function-relative offset is within the scope.
     #[inline]
-    pub fn contains(&self, offset: u32) -> bool {
+    #[must_use]
+    pub fn contains(self, offset: u32) -> bool {
         offset >= self.offset && offset - self.offset < self.length
     }
 }
@@ -158,7 +168,7 @@ impl Scope {
 #[cfg(feature = "read")]
 #[inline]
 pub(crate) fn prel31_value(word: u32) -> i32 {
-    ((word << 1) as i32) >> 1
+    (word << 1).cast_signed() >> 1
 }
 
 /// Encode a signed displacement into the low 31 bits of a word, if it fits.
@@ -166,7 +176,7 @@ pub(crate) fn prel31_value(word: u32) -> i32 {
 #[inline]
 pub(crate) fn prel31_encode(value: i64) -> Option<u32> {
     if (-(1 << 30)..(1 << 30)).contains(&value) {
-        Some(value as u32 & 0x7fff_ffff)
+        Some(value.cast_unsigned() as u32 & 0x7fff_ffff)
     } else {
         None
     }

@@ -47,7 +47,7 @@ const SPECIAL_WORDS: [u32; 12] = [
 ];
 
 fn mutate(rng: &mut Rng, data: &mut Vec<u8>) {
-    for _ in 0..1 + rng.below(8) {
+    for _ in 0..=rng.below(8) {
         match rng.below(6) {
             0 if !data.is_empty() => {
                 let i = rng.below(data.len() as u64) as usize;

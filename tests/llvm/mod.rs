@@ -52,7 +52,7 @@ pub struct Entry {
     pub function_address: u64,
     pub model: String,
     pub personality_index: Option<u32>,
-    pub table_entry: Option<u64>,
+    pub extab_address: Option<u64>,
     pub personality_address: Option<u64>,
     /// `(bytes, meaning)`, e.g. `("0xB2 0x3F", "vsp = vsp + 768")`.
     pub opcodes: Vec<(String, String)>,
@@ -105,7 +105,7 @@ pub fn readobj(tool: &Path, file: &Path) -> Vec<Entry> {
                 "FunctionAddress" => entry.function_address = hex(value),
                 "Model" => entry.model = value.to_string(),
                 "PersonalityIndex" => entry.personality_index = Some(value.parse().unwrap()),
-                "TableEntryAddress" | "TableEntryOffset" => entry.table_entry = Some(hex(value)),
+                "TableEntryAddress" | "TableEntryOffset" => entry.extab_address = Some(hex(value)),
                 "PersonalityRoutineAddress" => entry.personality_address = Some(hex(value)),
                 _ => {}
             }
@@ -159,7 +159,6 @@ fn llvm_meaning(instruction: UnwindInstruction) -> String {
             format!("pop {}", llvm_range("d", 8, count))
         }
         PopRaAuthCode => "pop ra_auth_code".into(),
-        UseVspAsRaAuthModifier => "spare".into(),
         PopWmmxWr10 { count } => format!("pop {}", llvm_range("wR", 10, count)),
         PopWmmx { first, count } => format!("pop {}", llvm_range("wR", first, count)),
         PopWmmxControl { mask } => {
@@ -171,7 +170,8 @@ fn llvm_meaning(instruction: UnwindInstruction) -> String {
         }
         Spare { opcode: 0x9d, .. } => "reserved (ARM MOVrr)".into(),
         Spare { opcode: 0x9f, .. } => "reserved (WiMMX MOVrr)".into(),
-        Spare { .. } => "spare".into(),
+        // llvm-readobj predates 0xb5 and prints it as spare.
+        Spare { .. } | UseVspAsRaAuthModifier => "spare".into(),
     }
 }
 
@@ -208,7 +208,7 @@ pub fn ehabi_entries(exidx_data: &[u8], extab_data: &[u8], layout: &Layout) -> V
         Layout::Linked(bases) => bases.extab.map_or(0, u64::from),
         Layout::Relocatable => 0,
     };
-    let signed = |value: i32| value as i64 as u64;
+    let signed = |value: i32| i64::from(value).cast_unsigned();
 
     let mut entries = Vec::new();
     let mut iter = exidx.entries();
@@ -232,9 +232,9 @@ pub fn ehabi_entries(exidx_data: &[u8], extab_data: &[u8], layout: &Layout) -> V
             ExIdxEntryData::ExTab(reference) => {
                 let offset = match layout {
                     Layout::Linked(bases) => entry.extab_offset(bases).unwrap().unwrap().0,
-                    Layout::Relocatable => reference.value as usize,
+                    Layout::Relocatable => usize::try_from(reference.value).unwrap(),
                 };
-                out.table_entry = Some(extab_base + offset as u64);
+                out.extab_address = Some(extab_base + offset as u64);
                 match extab.entry_at(ExTabOffset(offset)).unwrap() {
                     ExTabEntry::Compact(compact) => {
                         out.model = "Compact".into();
@@ -297,8 +297,8 @@ pub fn diff(tool: &Path, file: &Path, expected: &[Entry]) -> Option<String> {
 
 /// Compare with llvm-readobj, panicking on any difference. Returns the
 /// number of entries compared.
-pub fn compare(tool: &Path, file: &Path, expected: Vec<Entry>) -> usize {
-    if let Some(difference) = diff(tool, file, &expected) {
+pub fn compare(tool: &Path, file: &Path, expected: &[Entry]) -> usize {
+    if let Some(difference) = diff(tool, file, expected) {
         panic!("{}: {difference}", file.display());
     }
     expected.len()

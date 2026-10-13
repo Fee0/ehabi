@@ -19,11 +19,20 @@ pub trait Writer {
     fn len(&self) -> usize;
 
     /// Write a slice.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the writer cannot store the bytes.
     fn write(&mut self, bytes: &[u8]) -> Result<()>;
 
     /// Write a slice at a given offset.
     ///
     /// The write must not extend past the current section length.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::OffsetOutOfBounds`] if the write extends past the
+    /// current section length.
     fn write_at(&mut self, offset: usize, bytes: &[u8]) -> Result<()>;
 
     /// Write a `prel31` reference, with `high_bit` stored in bit 31.
@@ -33,6 +42,13 @@ pub trait Writer {
     ///
     /// If the writer supports relocations, then it must provide its own
     /// implementation of this method.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::MissingBaseAddress`] if a section address needed to
+    /// resolve the reference is not in `bases`, [`Error::InvalidAddress`] for a
+    /// symbol target if the writer does not support relocations, and
+    /// [`Error::Prel31OutOfRange`] if the displacement does not fit in 31 bits.
     fn write_prel31(
         &mut self,
         place: SectionId,
@@ -51,6 +67,11 @@ pub trait Writer {
     ///
     /// If the writer supports relocations, then it must provide its own
     /// implementation of this method.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::InvalidAddress`] for a symbol target if the writer does
+    /// not support relocations.
     fn write_target2(&mut self, target: Address) -> Result<()> {
         match target {
             Address::Constant(value) => self.write_u32(value),
@@ -62,16 +83,28 @@ pub trait Writer {
     /// an `R_ARM_NONE` relocation. Nothing is written.
     ///
     /// The default implementation does nothing.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the writer cannot record the dependency.
     fn write_dependency(&mut self, _symbol: usize) -> Result<()> {
         Ok(())
     }
 
     /// Write a u8.
+    ///
+    /// # Errors
+    ///
+    /// Returns the errors of [`write`](Self::write).
     fn write_u8(&mut self, val: u8) -> Result<()> {
         self.write(&[val])
     }
 
     /// Write a u16.
+    ///
+    /// # Errors
+    ///
+    /// Returns the errors of [`write`](Self::write).
     fn write_u16(&mut self, val: u16) -> Result<()> {
         let mut bytes = [0; 2];
         self.endian().write_u16(&mut bytes, val);
@@ -79,6 +112,10 @@ pub trait Writer {
     }
 
     /// Write a u32.
+    ///
+    /// # Errors
+    ///
+    /// Returns the errors of [`write`](Self::write).
     fn write_u32(&mut self, val: u32) -> Result<()> {
         let mut bytes = [0; 4];
         self.endian().write_u32(&mut bytes, val);
@@ -86,6 +123,10 @@ pub trait Writer {
     }
 
     /// Write a u32 at the given offset.
+    ///
+    /// # Errors
+    ///
+    /// Returns the errors of [`write_at`](Self::write_at).
     fn write_u32_at(&mut self, offset: usize, val: u32) -> Result<()> {
         let mut bytes = [0; 4];
         self.endian().write_u32(&mut bytes, val);
@@ -93,6 +134,10 @@ pub trait Writer {
     }
 
     /// Write zero bytes until the length is a multiple of 4.
+    ///
+    /// # Errors
+    ///
+    /// Returns the errors of [`write`](Self::write).
     fn align_to_word(&mut self) -> Result<()> {
         let padding = self.len().wrapping_neg() % 4;
         self.write(&[0; 3][..padding])
@@ -120,7 +165,7 @@ pub(crate) fn resolve_prel31(
         .get(place)
         .ok_or(Error::MissingBaseAddress(place))?
         .wrapping_add(offset as u32);
-    let displacement = i64::from(target.wrapping_sub(place) as i32);
+    let displacement = i64::from(target.wrapping_sub(place).cast_signed());
     let word = prel31_encode(displacement).ok_or(Error::Prel31OutOfRange(displacement))?;
     Ok(word | (u32::from(high_bit) << 31))
 }
@@ -153,7 +198,10 @@ mod tests {
             &bases,
         )
         .unwrap();
-        assert_eq!(w.slice()[4..8], (-12i32 as u32 & 0x7fff_ffff).to_le_bytes());
+        assert_eq!(
+            w.slice()[4..8],
+            ((-12i32).cast_unsigned() & 0x7fff_ffff).to_le_bytes()
+        );
         assert_eq!(w.slice()[8..12], (0x8000_0000u32 | 0x1000).to_le_bytes());
 
         assert_eq!(

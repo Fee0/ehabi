@@ -37,11 +37,12 @@ use llvm::{Layout, compare, ehabi_entries, llvm_readobj};
 
 #[test]
 fn fixtures_match_llvm() {
+    use object::{Object, ObjectSection};
+
     let Some(tool) = llvm_readobj() else {
         eprintln!("llvm-readobj not found; skipping (install the llvm-tools component)");
         return;
     };
-    use object::{Object, ObjectSection};
     for name in [
         "unwind-armv7.o",
         "eh-armv7.o",
@@ -64,7 +65,7 @@ fn fixtures_match_llvm() {
                 continue;
             };
             let extab = file.section_by_name(&format!(".ARM.extab{suffix}"));
-            let extab_data = extab.as_ref().map(|s| s.data().unwrap()).unwrap_or(&[]);
+            let extab_data = extab.as_ref().map_or(&[][..], |s| s.data().unwrap());
             let layout = if relocatable {
                 Layout::Relocatable
             } else {
@@ -76,7 +77,7 @@ fn fixtures_match_llvm() {
             };
             expected.extend(ehabi_entries(exidx.data().unwrap(), extab_data, &layout));
         }
-        let count = compare(&tool, &path, expected);
+        let count = compare(&tool, &path, &expected);
         eprintln!("{name}: {count} entries match llvm-readobj");
     }
 }
@@ -129,8 +130,8 @@ fn random_instruction(rng: &mut Rng) -> UnwindInstruction {
             continue;
         };
         let known_deviation = match instruction {
-            UnwindInstruction::UseVspAsRaAuthModifier => true,
-            UnwindInstruction::Spare {
+            UnwindInstruction::UseVspAsRaAuthModifier
+            | UnwindInstruction::Spare {
                 opcode: 0xb1,
                 operand: Some(0),
             } => true,
@@ -355,7 +356,7 @@ fn random_tables_match_llvm() {
 
         let layout = Layout::Linked(bases);
         let expected = ehabi_entries(sections.exidx.slice(), sections.extab.slice(), &layout);
-        total += compare(&tool, &path, expected);
+        total += compare(&tool, &path, &expected);
 
         // ehabi reads back what it wrote.
         let exidx = ExIdx::new(sections.exidx.slice(), LittleEndian);

@@ -49,7 +49,7 @@ where
     }
 }
 
-impl<'input, Endian> Deref for EndianSlice<'input, Endian>
+impl<Endian> Deref for EndianSlice<'_, Endian>
 where
     Endian: Endianity,
 {
@@ -59,7 +59,7 @@ where
     }
 }
 
-impl<'input, Endian> core::fmt::Debug for EndianSlice<'input, Endian>
+impl<Endian> core::fmt::Debug for EndianSlice<'_, Endian>
 where
     Endian: Endianity,
 {
@@ -73,7 +73,7 @@ where
 
 struct DebugBytes<'input>(&'input [u8]);
 
-impl<'input> core::fmt::Debug for DebugBytes<'input> {
+impl core::fmt::Debug for DebugBytes<'_> {
     fn fmt(&self, fmt: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         let mut list = fmt.debug_list();
         list.entries(self.0.iter().take(8).copied().map(DebugByte));
@@ -100,7 +100,7 @@ impl core::fmt::Debug for DebugLen {
     }
 }
 
-impl<'input, Endian> Reader for EndianSlice<'input, Endian>
+impl<Endian> Reader for EndianSlice<'_, Endian>
 where
     Endian: Endianity,
 {

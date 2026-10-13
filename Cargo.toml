@@ -4,10 +4,23 @@ version = "0.1.0"
 edition = "2024"
 rust-version = "1.88"
 description = "A library for reading and writing the Arm EHABI exception tables (.ARM.exidx and .ARM.extab)."
-license = "MIT OR Apache-2.0"
+repository = "https://github.com/Fee0/ehabi"
+license = "MIT"
 keywords = ["arm", "ehabi", "unwind", "exidx", "elf"]
 categories = ["development-tools::debugging", "parser-implementations", "no-std"]
 readme = "README.md"
+include = [
+    "/src",
+    "/examples",
+    "/tests/elf/mod.rs",
+    "/README.md",
+    "/CHANGELOG.md",
+    "/LICENSE",
+]
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
 
 [features]
 default = ["read", "write"]
@@ -43,3 +56,15 @@ required-features = ["read", "write"]
 [[test]]
 name = "fuzz"
 required-features = ["read", "write"]
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(docsrs)"] }
+
+[lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+# The format packs fields into 8-, 16- and 32-bit words, so narrowing casts
+# are the norm; every value is range-checked or masked before it is cast.
+cast_possible_truncation = "allow"
+# Function-local `use UnwindInstruction::*` keeps the large instruction
+# matches readable.
+enum_glob_use = "allow"

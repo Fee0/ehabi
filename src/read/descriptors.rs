@@ -38,6 +38,13 @@ impl<R: Reader> DescriptorIter<R> {
     }
 
     /// Advance the iterator and return the next descriptor.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::UnexpectedEof`] if the list is not terminated within
+    /// the section, [`Error::InvalidScope`] for a descriptor with a zero-length
+    /// scope, and [`Error::InvalidDescriptorKind`] for the reserved descriptor
+    /// kind. After an error, the iterator returns `Ok(None)`.
     pub fn next(&mut self) -> Result<Option<Descriptor<R>>> {
         if self.done {
             return Ok(None);
@@ -244,6 +251,11 @@ pub struct TypeInfoIter<R: Reader> {
 
 impl<R: Reader> TypeInfoIter<R> {
     /// Advance the iterator and return the next reference.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if a reference cannot be read or relocated. After an
+    /// error, the iterator returns `Ok(None)`.
     pub fn next(&mut self) -> Result<Option<Target2>> {
         if self.input.is_empty() {
             return Ok(None);

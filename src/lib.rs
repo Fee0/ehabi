@@ -21,6 +21,9 @@
 //!   encoding, so instructions survive a read/write round trip byte for byte
 //!   (except that a non-minimal uleb128 operand is re-encoded minimally).
 //!
+//! The [`read`] and [`write`](mod@write) module documentation each start with
+//! a complete example.
+//!
 //! ## Cargo features
 //!
 //! * `read` (default): the [`read`] module.
@@ -37,6 +40,7 @@
 // errors propagate with `?`; they also implement `Iterator`.
 #![allow(clippy::should_implement_trait)]
 #![no_std]
+#![cfg_attr(docsrs, feature(doc_cfg))]
 
 extern crate alloc;
 
@@ -59,5 +63,5 @@ pub mod read;
 #[cfg(feature = "write")]
 pub mod write;
 
-#[cfg(test)]
+#[cfg(all(test, any(feature = "read", feature = "write")))]
 mod test_util;

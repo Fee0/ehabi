@@ -26,7 +26,7 @@ pub struct EhSections<'data> {
     pub symbols: Vec<(u32, String)>,
 }
 
-impl<'data> EhSections<'data> {
+impl EhSections<'_> {
     /// Return the address of the named symbol, if any.
     pub fn symbol_address(&self, name: &str) -> Option<u32> {
         self.symbols

@@ -12,7 +12,7 @@ fn read_fixture(name: &str) -> Vec<u8> {
 }
 
 /// Parse a fixture's EHABI sections.
-fn sections<'data>(data: &'data [u8]) -> elf::EhSections<'data> {
+fn sections(data: &[u8]) -> elf::EhSections<'_> {
     let file = object::File::parse(data).unwrap();
     elf::load(&file).unwrap()
 }
@@ -58,6 +58,7 @@ fn descriptors<'a>(entry: &UnwindEntry<elf::Reader<'a>>) -> Vec<Descriptor<elf::
 }
 
 /// The functions in `unwind.s` decode to what their directives specify.
+#[expect(clippy::too_many_lines, reason = "one check per fixture function")]
 fn check_unwind_object(name: &str) {
     let data = read_fixture(name);
     let s = sections(&data);
@@ -384,7 +385,7 @@ fn write_relocatable() {
     table.set_personality_symbol(PersonalityIndex::SU16, PR0);
     table.set_personality_symbol(PersonalityIndex::LU16, PR1);
     let mut inline = CompactEntry::new(PersonalityIndex::SU16);
-    inline.instructions = UnwindInstruction::pop_core(0x4010).unwrap();
+    inline.instructions = UnwindInstruction::pop_core(0x4010);
     table.add_index_entry(IndexEntry {
         function: Address::Symbol {
             symbol: TEXT,

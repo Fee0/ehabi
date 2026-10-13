@@ -1,5 +1,9 @@
 use alloc::vec::Vec;
 
+#[allow(
+    clippy::wildcard_imports,
+    reason = "the encoder covers the opcode table"
+)]
 use crate::constants::*;
 use crate::unwind::UnwindInstruction;
 use crate::write::{Error, Result};
@@ -11,6 +15,13 @@ impl UnwindInstruction {
     /// instruction's encoding. Operands that are representable but name
     /// registers outside the architecture (for example `D[15]-D[18]` with
     /// FSTMFDX) are encoded as-is; the EHABI defines these as reserved.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::InvalidUnwindInstruction`] if an operand is outside the
+    /// range of the encoding, or if a [`Spare`](Self::Spare) instruction does
+    /// not describe a spare encoding.
+    #[expect(clippy::too_many_lines, reason = "one arm per instruction encoding")]
     pub fn encode(&self, out: &mut Vec<u8>) -> Result<()> {
         use UnwindInstruction::*;
 
@@ -49,9 +60,10 @@ impl UnwindInstruction {
             }
             RefuseToUnwind => out.extend_from_slice(&[UNWIND_OPCODE_POP_REG_MASK_R4, 0x00]),
             PopCore { mask } => {
-                if mask != 0 && mask & 0xfff0 == 0 {
+                let (low, high) = (mask & 0x000f, mask & 0xfff0);
+                if low != 0 && high == 0 {
                     out.extend_from_slice(&[UNWIND_OPCODE_POP_REG_MASK, mask as u8]);
-                } else if mask != 0 && mask & 0xf == 0 {
+                } else if high != 0 && low == 0 {
                     out.extend_from_slice(&[
                         UNWIND_OPCODE_POP_REG_MASK_R4 | (mask >> 12) as u8,
                         (mask >> 4) as u8,
@@ -83,7 +95,7 @@ impl UnwindInstruction {
                 range(first, count)?,
             ]),
             PopVfpFstmxD8 { count } => {
-                out.push(UNWIND_OPCODE_POP_VFP_REG_RANGE_FSTMFDX_D8 | short_count(count, 8)?)
+                out.push(UNWIND_OPCODE_POP_VFP_REG_RANGE_FSTMFDX_D8 | short_count(count, 8)?);
             }
             PopVfpVpush { first, count } => {
                 if first < 16 {
@@ -99,12 +111,12 @@ impl UnwindInstruction {
                 }
             }
             PopVfpVpushD8 { count } => {
-                out.push(UNWIND_OPCODE_POP_VFP_REG_RANGE_VPUSH_D8 | short_count(count, 8)?)
+                out.push(UNWIND_OPCODE_POP_VFP_REG_RANGE_VPUSH_D8 | short_count(count, 8)?);
             }
             PopRaAuthCode => out.push(UNWIND_OPCODE_POP_RA_AUTH_CODE),
             UseVspAsRaAuthModifier => out.push(UNWIND_OPCODE_RA_AUTH_MODIFIER_VSP),
             PopWmmxWr10 { count } => {
-                out.push(UNWIND_OPCODE_POP_WIRELESS_MMX_REG_RANGE_WR10 | short_count(count, 6)?)
+                out.push(UNWIND_OPCODE_POP_WIRELESS_MMX_REG_RANGE_WR10 | short_count(count, 6)?);
             }
             PopWmmx { first, count } => out.extend_from_slice(&[
                 UNWIND_OPCODE_POP_WIRELESS_MMX_REG_RANGE,
@@ -135,6 +147,11 @@ impl UnwindInstruction {
     /// encoding.
     ///
     /// `bytes` must be a multiple of 4. Returns no instructions for zero.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::InvalidUnwindOperand`] if `bytes` is not a multiple of
+    /// 4.
     pub fn vsp_add(bytes: u64) -> Result<Vec<UnwindInstruction>> {
         if !bytes.is_multiple_of(4) {
             return Err(Error::InvalidUnwindOperand(bytes));
@@ -153,6 +170,11 @@ impl UnwindInstruction {
     /// Return the instructions for `vsp = vsp - bytes`.
     ///
     /// `bytes` must be a multiple of 4. Returns no instructions for zero.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::InvalidUnwindOperand`] if `bytes` is not a multiple of
+    /// 4.
     pub fn vsp_sub(bytes: u32) -> Result<Vec<UnwindInstruction>> {
         if !bytes.is_multiple_of(4) {
             return Err(Error::InvalidUnwindOperand(u64::from(bytes)));
@@ -171,7 +193,8 @@ impl UnwindInstruction {
     /// for `rN`), as saved by a single `push`, using the shortest encoding.
     ///
     /// Registers r0-r3 are at the lowest addresses, so they are popped first.
-    pub fn pop_core(mask: u16) -> Result<Vec<UnwindInstruction>> {
+    #[must_use]
+    pub fn pop_core(mask: u16) -> Vec<UnwindInstruction> {
         let mut out = Vec::new();
         let low = mask & 0xf;
         if low != 0 {
@@ -189,7 +212,7 @@ impl UnwindInstruction {
                 UnwindInstruction::PopCore { mask: high }
             });
         }
-        Ok(out)
+        out
     }
 
     /// Return the instructions to pop VFP registers `D[first]..D[first +
@@ -197,6 +220,10 @@ impl UnwindInstruction {
     ///
     /// The registers must be within D0-D31. Returns no instructions for a zero
     /// count.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::InvalidUnwindOperand`] if the range extends beyond D31.
     pub fn pop_vfp(first: u8, count: u8) -> Result<Vec<UnwindInstruction>> {
         if u32::from(first) + u32::from(count) > 32 {
             return Err(Error::InvalidUnwindOperand(
@@ -270,6 +297,10 @@ pub(crate) fn pack_unwind_instructions(
 }
 
 /// Encode a sequence of unwinding instructions.
+///
+/// # Errors
+///
+/// Returns the first error from [`UnwindInstruction::encode`].
 pub fn encode_unwind_instructions(instructions: &[UnwindInstruction]) -> Result<Vec<u8>> {
     let mut out = Vec::new();
     for instruction in instructions {
@@ -383,19 +414,19 @@ mod tests {
 
         assert_eq!(
             UnwindInstruction::pop_core(0x4ff0),
-            Ok(alloc::vec![PopCoreRange { last: 11, lr: true }])
+            alloc::vec![PopCoreRange { last: 11, lr: true }]
         );
         assert_eq!(
             UnwindInstruction::pop_core(0x00f0),
-            Ok(alloc::vec![PopCoreRange { last: 7, lr: false }])
+            alloc::vec![PopCoreRange { last: 7, lr: false }]
         );
         assert_eq!(
             UnwindInstruction::pop_core(0x4000),
-            Ok(alloc::vec![PopCore { mask: 0x4000 }])
+            alloc::vec![PopCore { mask: 0x4000 }]
         );
         assert_eq!(
             UnwindInstruction::pop_core(0x5f0f),
-            Ok(alloc::vec![PopCore { mask: 0xf }, PopCore { mask: 0x5f00 }])
+            alloc::vec![PopCore { mask: 0xf }, PopCore { mask: 0x5f00 }]
         );
 
         assert_eq!(

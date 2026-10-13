@@ -133,11 +133,16 @@ pub trait Section<R>: From<R> {
     fn id() -> SectionId;
 
     /// Returns the ELF section name for this type.
+    #[must_use]
     fn section_name() -> &'static str {
         Self::id().name()
     }
 
     /// Try to load the section using the given loader function.
+    ///
+    /// # Errors
+    ///
+    /// Returns the error from `f`.
     fn load<F, E>(f: F) -> result::Result<Self, E>
     where
         F: FnOnce(SectionId) -> result::Result<R, E>,
@@ -174,10 +179,11 @@ impl Prel31 {
     /// Resolve the reference, given the address of the section it was read
     /// from.
     #[inline]
+    #[must_use]
     pub fn address(&self, section_address: u32) -> u32 {
         section_address
             .wrapping_add(self.offset as u32)
-            .wrapping_add(self.value as u32)
+            .wrapping_add(self.value.cast_unsigned())
     }
 }
 

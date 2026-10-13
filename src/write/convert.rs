@@ -68,6 +68,12 @@ impl UnwindTable {
     ///
     /// Descriptors with a zero-length scope are rejected with
     /// [`read::Error::InvalidScope`], as the EHABI requires a non-zero length.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ConvertError::Read`] if an entry cannot be parsed or a base
+    /// address is missing, and [`ConvertError::Write`] if a parsed entry cannot
+    /// be represented in the table.
     pub fn from_read<R: Reader>(
         exidx: &read::ExIdx<R>,
         extab: &read::ExTab<R>,

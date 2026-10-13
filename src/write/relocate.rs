@@ -121,7 +121,7 @@ impl<T: RelocateWriter> Writer for T {
                     target: RelocationTarget::Symbol(symbol),
                     addend: i64::from(addend),
                 });
-                self.writer_mut().write_u32(addend as u32)
+                self.writer_mut().write_u32(addend.cast_unsigned())
             }
         }
     }

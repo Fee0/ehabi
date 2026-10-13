@@ -19,6 +19,46 @@ use core::fmt;
 ///
 /// "vsp" is the virtual stack pointer of the frame being unwound. Register
 /// masks use bit `n` for core register `rN`.
+///
+/// Instructions display in the notation of the EHABI:
+///
+/// ```
+/// use ehabi::UnwindInstruction;
+///
+/// let pop = UnwindInstruction::PopCoreRange { last: 7, lr: true };
+/// assert_eq!(pop.to_string(), "pop {r4, r5, r6, r7, lr}");
+/// assert_eq!(UnwindInstruction::IncrementVsp(16).to_string(), "vsp = vsp + 16");
+/// ```
+///
+/// With the `read` and `write` features, instructions decode from and encode
+/// to bytes:
+///
+/// ```
+/// # #[cfg(all(feature = "read", feature = "write"))]
+/// # fn main() -> Result<(), Box<dyn std::error::Error>> {
+/// use ehabi::UnwindInstruction;
+/// use ehabi::read::decode_unwind_instruction;
+/// use ehabi::write::encode_unwind_instructions;
+///
+/// let mut bytes = [0x03, 0xab, 0xb0].into_iter();
+/// let mut instructions = Vec::new();
+/// while let Some(instruction) = decode_unwind_instruction(&mut bytes)? {
+///     instructions.push(instruction);
+/// }
+/// assert_eq!(
+///     instructions,
+///     [
+///         UnwindInstruction::IncrementVsp(16),
+///         UnwindInstruction::PopCoreRange { last: 7, lr: true },
+///         UnwindInstruction::Finish,
+///     ]
+/// );
+/// assert_eq!(encode_unwind_instructions(&instructions)?, [0x03, 0xab, 0xb0]);
+/// # Ok(())
+/// # }
+/// # #[cfg(not(all(feature = "read", feature = "write")))]
+/// # fn main() {}
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum UnwindInstruction {
     /// `00xxxxxx`: `vsp = vsp + bytes`.
@@ -146,6 +186,7 @@ pub enum UnwindInstruction {
 impl UnwindInstruction {
     /// Returns true if this is a spare or reserved encoding.
     #[inline]
+    #[must_use]
     pub fn is_spare(&self) -> bool {
         matches!(self, UnwindInstruction::Spare { .. })
     }
@@ -154,6 +195,7 @@ impl UnwindInstruction {
     ///
     /// Returns `None` for a [`PopCoreRange`](Self::PopCoreRange) whose `last`
     /// is outside `4..=11`, which cannot be encoded.
+    #[must_use]
     pub fn popped_core_registers(&self) -> Option<u16> {
         match *self {
             UnwindInstruction::PopCore { mask } => Some(mask),
@@ -190,6 +232,10 @@ impl UnwindInstruction {
     where
         I: Iterator<Item = u8>,
     {
+        #[allow(
+            clippy::wildcard_imports,
+            reason = "the decoder covers the opcode table"
+        )]
         use crate::constants::*;
         use UnwindInstruction::*;
 
@@ -330,16 +376,15 @@ impl fmt::Display for UnwindInstruction {
                 f.write_str("pop ")?;
                 write_register_list(f, mask, write_core_register)
             }
-            PopCoreRange { last, lr } => match self.popped_core_registers() {
-                Some(mask) => {
+            PopCoreRange { last, lr } => {
+                if let Some(mask) = self.popped_core_registers() {
                     f.write_str("pop ")?;
                     write_register_list(f, mask, write_core_register)
-                }
-                None => {
+                } else {
                     let lr = if lr { ", lr" } else { "" };
                     write!(f, "pop {{r4-r{last}{lr}}} (invalid range)")
                 }
-            },
+            }
             SetVsp(reg) => write!(f, "vsp = r{reg}"),
             Finish => f.write_str("finish"),
             PopVfpFstmx { first, count } => {
