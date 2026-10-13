@@ -565,14 +565,27 @@ mod tests {
             run(&[spare], &mut regs, &mut memory),
             Err(Error::ReservedInstruction(spare))
         );
-        let beyond_d15 = PopVfpFstmx {
-            first: 12,
-            count: 5,
-        };
-        assert_eq!(
-            run(&[beyond_d15], &mut regs, &mut memory),
-            Err(Error::ReservedInstruction(beyond_d15))
-        );
+        for reserved in [
+            PopVfpFstmx {
+                first: 12,
+                count: 5,
+            },
+            PopVfpVpush {
+                first: 30,
+                count: 3,
+            },
+            PopWmmx {
+                first: 12,
+                count: 5,
+            },
+            PopWmmxControl { mask: 0x10 },
+            SetVsp(13),
+        ] {
+            assert_eq!(
+                run(&[reserved], &mut regs, &mut memory),
+                Err(Error::ReservedInstruction(reserved))
+            );
+        }
         let mut regs = frame(0x1000, 0);
         assert_eq!(
             run(&[PopCore { mask: 0x30 }], &mut regs, &mut memory),

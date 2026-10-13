@@ -209,7 +209,8 @@ personality routine, in a format similar to `llvm-readobj --unwind`.
 - **Round-trip conditions.** `UnwindTable::from_read` reproduces the
   sections exactly when every `.ARM.extab` entry is referenced from the index
   and the entries are contiguous. A non-minimal uleb128 operand in a compact
-  entry is re-encoded in its minimal form, which can shorten the entry.
+  entry is re-encoded in its minimal form and the entry padded with *Finish*,
+  so its bytes change but its length, and every later entry, stay the same.
 - **One module per unwinder.** `unwinder::Module` covers one image; a
   process with several shared libraries needs one module per library, chosen
   by address. Frame-pointer and stack-scanning fallbacks are left to the

@@ -109,6 +109,10 @@ impl<R: Reader> ExIdx<R> {
     /// usually terminate the table with an `EXIDX_CANTUNWIND` entry to bound
     /// the final function.
     ///
+    /// Bit 0 of the function addresses is ignored: the EHABI suggests that
+    /// producers set it for Thumb functions, so that a function starting at
+    /// `0x1000` may be recorded as `0x1001`.
+    ///
     /// `bases.exidx` must be set.
     ///
     /// # Errors
@@ -126,7 +130,7 @@ impl<R: Reader> ExIdx<R> {
             let mid = low + (high - low) / 2;
             let offset = mid * 8;
             let function = read_function(&mut self.section.range_from(offset)?, offset)?;
-            if function.address(exidx) <= address {
+            if function.address(exidx) & !1 <= address {
                 low = mid + 1;
             } else {
                 high = mid;
@@ -231,6 +235,9 @@ impl<R: Reader> ExIdxEntry<R> {
     }
 
     /// Return the address of the start of the function.
+    ///
+    /// Bit 0 is set if the producer marked a Thumb function this way, as the
+    /// EHABI suggests.
     ///
     /// `bases.exidx` must be set.
     ///
@@ -399,6 +406,27 @@ mod tests {
         assert_eq!(
             compact.instructions().unwrap().next(),
             Ok(Some(UnwindInstruction::SetVsp(7)))
+        );
+    }
+
+    #[test]
+    fn test_find_thumb_bit() {
+        // exidx at 0x2000: f at 0x0f00, then a Thumb function g at 0x1000
+        // recorded with bit 0 set, as the EHABI suggests.
+        let data = words_le(&[
+            0x0f00u32.wrapping_sub(0x2000) & 0x7fff_ffff,
+            1,
+            0x1001u32.wrapping_sub(0x2008) & 0x7fff_ffff,
+            1,
+        ]);
+        let exidx = ExIdx::new(&data, LittleEndian);
+        let bases = BaseAddresses::default().set_exidx(0x2000);
+        let entry = exidx.find(0x1000, &bases).unwrap().unwrap();
+        assert_eq!(entry.offset(), ExIdxOffset(8));
+        assert_eq!(entry.function_address(&bases), Ok(0x1001));
+        assert_eq!(
+            exidx.find(0x0fff, &bases).unwrap().unwrap().offset(),
+            ExIdxOffset(0)
         );
     }
 

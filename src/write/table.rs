@@ -87,8 +87,18 @@ impl UnwindTable {
     /// `R_ARM_NONE` dependency on the symbol, as the EHABI requires of object
     /// producers. This only has an effect with a writer that records
     /// relocations.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the index is greater than 15, which the 4-bit field of a
+    /// compact entry cannot hold.
     pub fn set_personality_symbol(&mut self, personality: PersonalityIndex, symbol: usize) {
-        self.personality_symbols[usize::from(personality.0 & 0xf)] = Some(symbol);
+        assert!(
+            personality.0 < 16,
+            "personality index {} is out of range",
+            personality.0
+        );
+        self.personality_symbols[usize::from(personality.0)] = Some(symbol);
     }
 
     /// Set the symbol for `__cxa_call_unexpected`.
@@ -172,8 +182,9 @@ impl UnwindTable {
         if inline && !entry.descriptors.is_empty() {
             return Err(Error::InlineEntryHasDescriptors);
         }
+        // Encoding succeeds only for the defined personality routines, 0-2.
         let words = entry.encode_unwind_words(inline)?;
-        if let Some(symbol) = self.personality_symbols[usize::from(entry.personality.0 & 0xf)] {
+        if let Some(symbol) = self.personality_symbols[usize::from(entry.personality.0)] {
             w.write_dependency(symbol)?;
         }
         for word in words {
@@ -593,6 +604,12 @@ mod tests {
                 0x4010 - 0x3014,
             ]
         );
+    }
+
+    #[test]
+    #[should_panic(expected = "personality index 16 is out of range")]
+    fn test_personality_symbol_out_of_range() {
+        UnwindTable::new().set_personality_symbol(PersonalityIndex(16), 0);
     }
 
     #[test]

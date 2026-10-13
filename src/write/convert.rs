@@ -1,6 +1,6 @@
 use alloc::collections::{BTreeMap, BTreeSet};
 use alloc::vec::Vec;
-use core::fmt;
+use core::{fmt, iter};
 
 use crate::common::{BaseAddresses, ExTabOffset, SectionId};
 use crate::read::{self, Reader, Section};
@@ -54,12 +54,15 @@ impl UnwindTable {
     /// original sections, provided that every `.ARM.extab` entry is
     /// referenced from the index and the entries are contiguous.
     ///
-    /// Instructions after the first *Finish* are kept so that each entry
-    /// keeps its length; trailing *Finish* padding is dropped, since the
-    /// writer adds it back. A compact entry can still change length in two
-    /// cases: a non-minimal uleb128 operand is re-encoded minimally, and
-    /// bytes after the first *Finish* that do not decode are dropped. The
-    /// table stays correct, but later `.ARM.extab` entries move.
+    /// Every entry keeps its length, so no `.ARM.extab` entry moves and
+    /// place-relative references inside entries (such as `R_ARM_TARGET2`
+    /// `type_info` references) stay valid. Instructions after the first
+    /// *Finish* are kept, and trailing *Finish* padding is dropped, since the
+    /// writer adds it back. Two cases change the bytes of a compact entry,
+    /// but not its length: a non-minimal uleb128 operand is re-encoded
+    /// minimally, and bytes after the first *Finish* that do not decode are
+    /// dropped. Either way the entry is padded with *Finish* to its original
+    /// length.
     ///
     /// The extent of a generic-model entry is not encoded, so it is taken to
     /// end where the next referenced entry (or the section) begins. If it
@@ -147,10 +150,12 @@ fn convert_compact<R: Reader>(
 /// Decode a frame unwinding description, returning the instructions and
 /// whether writing them reproduces the original bytes exactly.
 ///
-/// All bytes are decoded, including those after the first *Finish*, so the
-/// entry keeps its length. Trailing *Finish* padding that the writer adds
-/// back is dropped. If the bytes after the first *Finish* do not decode, the
-/// instructions up to it are kept and the result is not lossless.
+/// All bytes are decoded, including those after the first *Finish*. If the
+/// bytes after the first *Finish* do not decode, the instructions up to it are
+/// kept and the result is not lossless. Either way, the instructions encode
+/// to at least as many words as the original: a shorter encoding is padded
+/// with *Finish*, and trailing *Finish* padding that the writer adds back is
+/// dropped.
 fn convert_instructions<R: Reader>(
     bytes: read::UnwindBytes<R>,
     head_len: usize,
@@ -183,9 +188,12 @@ fn convert_instructions<R: Reader>(
     let encoded = encode_unwind_instructions(&instructions).unwrap_or_default();
     let lossless = decoded_all && encoded == original;
 
-    // Each *Finish* is one byte; drop those the writer's padding restores.
-    let words = extra_unwind_words(encoded.len(), head_len);
-    let mut len = encoded.len();
+    // Each *Finish* is one byte. Pad a shorter encoding to the original
+    // length, so the entry keeps its size, then drop the padding that the
+    // writer restores.
+    let mut len = encoded.len().max(original.len());
+    instructions.extend(iter::repeat_n(Finish, len - encoded.len()));
+    let words = extra_unwind_words(len, head_len);
     while instructions.last() == Some(&Finish) && extra_unwind_words(len - 1, head_len) == words {
         instructions.pop();
         len -= 1;
@@ -328,6 +336,40 @@ mod tests {
             panic!("expected generic entry");
         };
         assert!(matches!(generic.data, GenericData::Raw(_)));
+    }
+
+    /// A compact entry whose instructions re-encode shorter keeps its length,
+    /// so the entries after it do not move.
+    #[test]
+    fn test_shortened_entry_keeps_length() {
+        let bases = BaseAddresses::default().set_exidx(0x1000).set_extab(0x2000);
+        let extab_data = words_le(&[
+            // 0x00: Lu16 with 2 extra words: `b2 80 80 80 80 80 00`, a uleb128
+            // of 0 in 6 bytes (minimally `b2 00`), then Finish.
+            0x8102_b280,
+            0x8080_8080,
+            0x00b0_b0b0,
+            0,
+            // 0x10: Su16, followed by a catch descriptor whose type_info is a
+            // place-relative reference.
+            0x80b0_b0b0,
+            0x0000_0005,
+            0x7fff_f000,
+            0x0000_1234,
+            0,
+        ]);
+        let exidx_data = words_le(&[0x10, 0x2000 - 0x1004, 0x20, 0x2010 - 0x100c]);
+        let exidx = read::ExIdx::new(&exidx_data, LittleEndian);
+        let extab = read::ExTab::new(&extab_data, LittleEndian);
+        let table = UnwindTable::from_read(&exidx, &extab, &bases).unwrap();
+
+        let mut sections = Sections::new(EndianVec::new(LittleEndian));
+        table.write(&mut sections, &bases).unwrap();
+        // Only the uleb128 bytes change; the second entry stays at 0x10.
+        let mut expected = extab_data.clone();
+        expected[..12].copy_from_slice(&words_le(&[0x8102_b200, 0xb0b0_b0b0, 0xb0b0_b0b0]));
+        assert_eq!(sections.extab.slice(), expected);
+        assert_eq!(sections.exidx.slice(), exidx_data);
     }
 
     fn table_id(table: &UnwindTable, index: usize) -> crate::write::ExTabEntryId {
