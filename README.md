@@ -1,5 +1,9 @@
 # ehabi
 
+[![CI](https://github.com/Fee0/ehabi/actions/workflows/ci.yml/badge.svg)](https://github.com/Fee0/ehabi/actions/workflows/ci.yml)
+[![MSRV 1.88](https://img.shields.io/badge/MSRV-1.88-blue.svg)](#installation)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
 A Rust library for reading and writing the exception-handling tables of the
 32-bit Arm architecture: `.ARM.exidx` and `.ARM.extab`.
 
@@ -42,12 +46,11 @@ libgcc (`unwind-arm-common.inc`, `pr-support.c`) for it.
 
 ## Installation
 
-The crate is not yet published on crates.io. Add it as a path or Git
-dependency:
+The crate is not yet published on crates.io. Add it as a Git dependency:
 
 ```toml
 [dependencies]
-ehabi = { path = "../ehabi" }
+ehabi = { git = "https://github.com/Fee0/ehabi" }
 ```
 
 Minimum supported Rust version: **1.88** (edition 2024).
@@ -121,7 +124,7 @@ let mut table = UnwindTable::new();
 // push {r4-r7, lr}; sub sp, sp, #16
 let mut entry = CompactEntry::new(PersonalityIndex::SU16);
 entry.instructions.extend(UnwindInstruction::vsp_add(16)?);
-entry.instructions.extend(UnwindInstruction::pop_core(0x40f0)?);
+entry.instructions.extend(UnwindInstruction::pop_core(0x40f0));
 table.add_index_entry(IndexEntry {
     function: Address::Constant(0x8000),
     data: IndexEntryData::Inline(entry),
@@ -237,3 +240,7 @@ for: big-endian files, the `0xb5` opcode (added in 2022Q3), `0xb1 0x00`, the
 count byte of inline personality 1 and 2 entries, uleb128 operands longer
 than 4 bytes, and VFP ranges beyond D31. The full list is in the test's
 documentation.
+
+## License
+
+Licensed under the [MIT License](LICENSE).
