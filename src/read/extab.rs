@@ -393,7 +393,7 @@ mod tests {
             .unwrap()
             .collect::<Result<_>>()
             .unwrap();
-        assert!(descriptors.is_empty());
+        assert_eq!(descriptors, []);
     }
 
     #[test]

@@ -226,7 +226,7 @@ fn fixture_sections() -> Vec<(Vec<u8>, Vec<u8>)> {
         };
         out.push((section(".ARM.exidx"), section(".ARM.extab")));
     }
-    assert!(!out.is_empty());
+    assert!(!out.is_empty(), "no fixtures in tests/data");
     out
 }
 
