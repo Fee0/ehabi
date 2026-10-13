@@ -300,14 +300,15 @@ pub enum GenericData {
         /// The frame unwinding instructions. Padding with *Finish* is added
         /// when written.
         instructions: Vec<UnwindInstruction>,
-        /// The language-specific data area. It is padded with zeros to a
-        /// word boundary.
+        /// The language-specific data area. If another entry follows, zero
+        /// padding up to the next word boundary is added before it.
         ///
         /// This is written as-is: any relocations it requires are not
         /// recorded.
         lsda: Vec<u8>,
     },
-    /// Uninterpreted data. It is padded with zeros to a word boundary.
+    /// Uninterpreted data. If another entry follows, zero padding up to the
+    /// next word boundary is added before it.
     Raw(Vec<u8>),
 }
 
@@ -330,7 +331,9 @@ impl GenericEntry {
             }
             GenericData::Raw(data) => w.write(data)?,
         }
-        w.align_to_word()
+        // The next entry is aligned when it is written. The last one is not
+        // padded, so the section can end mid-word, as GNU ld leaves it.
+        Ok(())
     }
 }
 
@@ -546,8 +549,11 @@ mod tests {
         assert_eq!(offsets.get(cleanup), ExTabOffset(0));
         assert_eq!(offsets.get(generic), ExTabOffset(16));
 
+        // The section ends with the last LSDA, without padding.
+        let extab = sections.extab.slice();
+        assert_eq!(extab.len(), 26);
         assert_eq!(
-            words(sections.extab.slice()),
+            words(&extab[..24]),
             [
                 0x80a9_b0b0,
                 0x0004_0008,
@@ -556,9 +562,9 @@ mod tests {
                 0,
                 (0x2000u32.wrapping_sub(0x4010)) & 0x7fff_ffff,
                 0x0097_a8b0,
-                0x0000_9bff,
             ]
         );
+        assert_eq!(extab[24..], [0xff, 0x9b]);
         assert_eq!(
             words(sections.exidx.slice()),
             [
