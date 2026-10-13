@@ -4,11 +4,13 @@
 [![MSRV 1.88](https://img.shields.io/badge/MSRV-1.88-blue.svg)](#installation)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-A Rust library for reading and writing the exception-handling tables of the
-32-bit Arm architecture: `.ARM.exidx` and `.ARM.extab`.
+A Rust library for reading, writing and executing the exception-handling
+tables of the 32-bit Arm architecture: `.ARM.exidx` and `.ARM.extab`.
 
 - **Read and write.** Parse tables from ELF section data, or build them in
   memory and encode them.
+- **Unwind.** A virtual unwinder recovers the caller's registers from a
+  stopped frame, for debuggers, profilers and crash-dump tools.
 - **Lossless.** Converting the tables of a linked image and writing them back
   reproduces the original sections byte for byte (see
   [Limitations](#limitations) for the exact conditions).
@@ -43,6 +45,7 @@ libgcc (`unwind-arm-common.inc`, `pr-support.c`) for it.
 | Descriptors | Cleanup, catch (including `catch(...)` and the fail variant), function exception specification; 16- and 32-bit scopes |
 | Generic model | Personality reference and raw data; GCC/LLVM layout decoded into unwinding instructions and LSDA |
 | Unwinding instructions | Every encoding in the EHABI, including spare and reserved encodings and `0xb4`/`0xb5` (PACBTI-M) |
+| Unwinder | Executes every instruction: core and VFP registers (FSTMX and VPUSH), iWMMXt (skipped), Return Address Authentication Code and modifier |
 
 ## Installation
 
@@ -61,6 +64,7 @@ Minimum supported Rust version: **1.88** (edition 2024).
 |---|:---:|---|
 | `read` | ✓ | The `read` module |
 | `write` | ✓ | The `write` module |
+| `unwinder` | ✓ | The `unwinder` module; implies `read` |
 | `fallible-iterator` | | Implements `fallible_iterator::FallibleIterator` for all iterators |
 
 ## Usage
@@ -147,6 +151,39 @@ For relocatable output, implement `RelocateWriter` and use `Address::Symbol`:
   `R_ARM_NONE` dependencies that the EHABI requires of object producers.
 - Addends are also stored in the relocated word, as REL relocations require.
 
+### Unwinding
+
+```rust
+use ehabi::unwinder::{Module, Registers};
+
+let module = Module::new(exidx, extab, bases);
+
+// The registers of the stopped thread; unknown registers may be left unset.
+let mut regs = Registers::from_core(core_registers);
+let mut memory = |address: u32| read_target_word(address);
+
+let mut first = true;
+loop {
+    let caller = match module.unwind_frame(&regs, first, &mut memory) {
+        Ok(caller) => caller,
+        Err(_) => break, // EXIDX_CANTUNWIND, no table entry, unreadable stack, ...
+    };
+    if caller.sp() <= regs.sp() {
+        break; // no progress: corrupt stack
+    }
+    println!("return address {:#x}", caller.pc().unwrap_or(0));
+    regs = caller;
+    first = false;
+}
+```
+
+`unwind_frame` looks up the program counter in the index (for return
+addresses, the address before it, which is inside the call), executes the
+entry's instructions and returns the caller's registers. Registers that the
+frame saved are restored; caller-saved registers (r0-r3, r12) keep their
+values from the unwound frame. `unwinder::execute` runs an instruction
+sequence directly.
+
 ### Dumping an ELF file
 
 ```sh
@@ -173,8 +210,10 @@ personality routine, in a format similar to `llvm-readobj --unwind`.
   sections exactly when every `.ARM.extab` entry is referenced from the index
   and the entries are contiguous. A non-minimal uleb128 operand in a compact
   entry is re-encoded in its minimal form, which can shorten the entry.
-- **No unwinder.** Instructions are decoded and encoded, not executed against
-  a register set.
+- **One module per unwinder.** `unwinder::Module` covers one image; a
+  process with several shared libraries needs one module per library, chosen
+  by address. Frame-pointer and stack-scanning fallbacks are left to the
+  caller.
 
 ## Testing
 
@@ -192,23 +231,27 @@ verify:
   objects, through the relocation layer;
 - a byte-identical read → `UnwindTable` → write round trip of a linked shared
   library;
-- address lookup of every function in the linked table.
+- address lookup of every function in the linked table;
+- the unwinder against simulated call stacks: random prologues saving core
+  and VFP registers in both byte orders, encoded as inline, compact and
+  generic entries, called in random chains, then unwound frame by frame up
+  to the `EXIDX_CANTUNWIND` entry of the outermost caller.
 
 ### Robustness
 
 `tests/fuzz.rs` feeds random sections and mutations of the fixture sections,
 in both byte orders and with arbitrary base addresses, through every read
-path, `UnwindTable::from_read` and the writer. Every call must return `Ok`
-or `Err`; a panic or an endless loop fails the test. It runs 20,000
-iterations per input kind by default; set `EHABI_FUZZ_ITERATIONS` for longer
-runs (preferably in debug mode, where integer overflow panics).
+path, `UnwindTable::from_read`, the writer and the unwinder. Every call must
+return `Ok` or `Err`; a panic or an endless loop fails the test. It runs
+20,000 iterations per input kind by default; set `EHABI_FUZZ_ITERATIONS` for
+longer runs (preferably in debug mode, where integer overflow panics).
 
 ### Real-world corpus
 
 `tests/corpus.rs` checks every ELF file with an `.ARM.exidx` section in the
 directory named by `EHABI_CORPUS`: all entries must parse and decode, linked
-files must round-trip byte for byte through `UnwindTable`, and little-endian
-files must match `llvm-readobj`. `scripts/fetch_corpus.py` downloads a corpus
+files must round-trip byte for byte through `UnwindTable`, little-endian
+files must match `llvm-readobj`, and the unwinder must execute every entry. `scripts/fetch_corpus.py` downloads a corpus
 of Debian `armhf` and `armel` packages (libstdc++, glibc, Qt, ICU, LLVM,
 Boost, OpenSSL and others; about 450 MB):
 

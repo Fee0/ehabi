@@ -2,12 +2,14 @@
 //! never panic or loop forever.
 //!
 //! Inputs are random sections and mutations of the sections in the clang
-//! fixtures, read in both byte orders with arbitrary base addresses.
+//! fixtures, read in both byte orders with arbitrary base addresses. The
+//! unwinder runs on random register sets over arbitrary memory.
 //! Set `EHABI_FUZZ_ITERATIONS` to run longer than the default.
 
 use ehabi::read::{
     CatchType, Descriptor, EndianSlice, ExIdx, ExIdxEntryData, ExTab, Reader, UnwindEntry,
 };
+use ehabi::unwinder::{Module, Registers};
 use ehabi::write::{EndianVec, Sections, UnwindTable};
 use ehabi::{BaseAddresses, Endianity, ExIdxOffset, ExTabOffset, LittleEndian, RunTimeEndian};
 use object::{Object, ObjectSection};
@@ -135,6 +137,23 @@ fn exercise<E: Endianity>(rng: &mut Rng, exidx_data: &[u8], extab_data: &[u8], e
                 ehabi::read::ExTabEntry::Compact(c) => UnwindEntry::Compact(c),
                 ehabi::read::ExTabEntry::Generic(g) => UnwindEntry::Generic(g),
             });
+        }
+    }
+
+    // Unwind random frames, with memory that returns arbitrary words.
+    let module = Module::new(exidx, extab, bases);
+    let seed = rng.next();
+    let mut memory = |address: u32| {
+        let word = (u64::from(address) ^ seed).wrapping_mul(0x9e37_79b9_7f4a_7c15);
+        (!word.is_multiple_of(16)).then_some((word >> 32) as u32)
+    };
+    for _ in 0..4 {
+        let mut regs = Registers::from_core(std::array::from_fn(|_| rng.next() as u32));
+        for _ in 0..rng.below(8) {
+            match module.unwind_frame(&regs, rng.below(2) == 0, &mut memory) {
+                Ok(caller) => regs = caller,
+                Err(_) => break,
+            }
         }
     }
 

@@ -22,6 +22,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Shortest-encoding helpers: `vsp_add`, `vsp_sub`, `pop_core` and `pop_vfp`.
 - `no_std` support (requires `alloc`) and an optional `fallible-iterator`
   feature.
+- A virtual unwinder (`unwinder` feature): `unwinder::execute` runs
+  unwinding instructions against a register set, and
+  `unwinder::Module::unwind_frame` unwinds one frame of a stopped program.
 - The `ehdump` example, which dumps the tables of an ELF file.
 
 [Unreleased]: https://github.com/Fee0/ehabi/commits/main

@@ -23,11 +23,13 @@ all-features = true
 rustdoc-args = ["--cfg", "docsrs"]
 
 [features]
-default = ["read", "write"]
+default = ["read", "write", "unwinder"]
 # Reading `.ARM.exidx` / `.ARM.extab`.
 read = []
 # Writing `.ARM.exidx` / `.ARM.extab`.
 write = []
+# The virtual unwinder.
+unwinder = ["read"]
 # Implement `fallible_iterator::FallibleIterator` for the iterators.
 fallible-iterator = ["dep:fallible-iterator"]
 
@@ -51,11 +53,15 @@ required-features = ["read", "write"]
 
 [[test]]
 name = "corpus"
-required-features = ["read", "write"]
+required-features = ["write", "unwinder"]
 
 [[test]]
 name = "fuzz"
-required-features = ["read", "write"]
+required-features = ["write", "unwinder"]
+
+[[test]]
+name = "unwinder"
+required-features = ["write", "unwinder"]
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ["cfg(docsrs)"] }

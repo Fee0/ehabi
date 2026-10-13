@@ -17,7 +17,10 @@
 //!   and writes it to a [`Writer`](write::Writer) such as
 //!   [`EndianVec`](write::EndianVec), optionally recording relocations.
 //!
-//! * [`UnwindInstruction`] is shared by both. Each variant maps to exactly one
+//! * The [`unwinder`] module executes the instructions to unwind stack frames
+//!   of a stopped program, as a debugger or profiler does.
+//!
+//! * [`UnwindInstruction`] is shared by all of them. Each variant maps to exactly one
 //!   encoding, so instructions survive a read/write round trip byte for byte
 //!   (except that a non-minimal uleb128 operand is re-encoded minimally).
 //!
@@ -28,6 +31,8 @@
 //!
 //! * `read` (default): the [`read`] module.
 //! * `write` (default): the [`write`](mod@write) module.
+//! * `unwinder` (default): the [`unwinder`] module, a virtual unwinder. It
+//!   implies `read`.
 //! * `fallible-iterator`: implement `fallible_iterator::FallibleIterator`
 //!   for the iterators.
 //!
@@ -62,6 +67,9 @@ pub mod read;
 
 #[cfg(feature = "write")]
 pub mod write;
+
+#[cfg(feature = "unwinder")]
+pub mod unwinder;
 
 #[cfg(all(test, any(feature = "read", feature = "write")))]
 mod test_util;

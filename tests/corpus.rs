@@ -10,7 +10,10 @@
 //! 2. for linked files, `UnwindTable::from_read` followed by `write`
 //!    reproduces both sections byte for byte;
 //! 3. for linked little-endian files, the decoding matches
-//!    `llvm-readobj --unwind`, when it is available.
+//!    `llvm-readobj --unwind`, when it is available;
+//! 4. for linked files, the unwinder executes every entry: unwinding a frame
+//!    stopped at the start of each function, over arbitrary stack contents,
+//!    either succeeds or stops at `EXIDX_CANTUNWIND` or *Refuse to unwind*.
 //!
 //! Run it in release mode: `cargo test --release --test corpus -- --nocapture`.
 
@@ -19,6 +22,7 @@ use std::path::{Path, PathBuf};
 
 use ehabi::RunTimeEndian;
 use ehabi::read::UnwindEntry;
+use ehabi::unwinder::{Error, Module, Registers};
 use ehabi::write::{EndianVec, Sections, UnwindTable};
 use object::Object;
 
@@ -47,6 +51,7 @@ struct Stats {
     gnu_generic: usize,
     identical: usize,
     llvm_checked: usize,
+    unwound: usize,
 }
 
 /// Check that every entry parses, returning a description of each failure.
@@ -124,6 +129,29 @@ fn check_entries(s: &elf::EhSections<'_>, stats: &mut Stats) -> Vec<String> {
                     Err(e) => errors.push(format!("entry 0x{at:x}: generic (GCC layout): {e}")),
                 }
             }
+        }
+    }
+    errors
+}
+
+/// Unwind a frame at the start of every function, returning a description
+/// of each failure.
+fn check_unwinding(s: &elf::EhSections<'_>, stats: &mut Stats) -> Vec<String> {
+    let module = Module::new(s.exidx.clone(), s.extab.clone(), s.bases);
+    let mut memory = |address: u32| Some(address.rotate_left(7) ^ 0x5a5a_5a5a);
+    let mut errors = Vec::new();
+    let mut entries = s.exidx.entries();
+    while let Ok(Some(entry)) = entries.next() {
+        let Ok(function) = entry.function_address(&s.bases) else {
+            continue;
+        };
+        let mut regs = Registers::from_core(std::array::from_fn(|n| 0x1000 * n as u32));
+        regs.set_core(Registers::SP, 0x7fff_0000);
+        regs.set_core(Registers::PC, function);
+        match module.unwind_frame(&regs, true, &mut memory) {
+            Ok(_) => stats.unwound += 1,
+            Err(Error::CantUnwind | Error::RefuseToUnwind) => {}
+            Err(e) => errors.push(format!("entry 0x{:x}: unwind: {e}", entry.offset().0)),
         }
     }
     errors
@@ -209,6 +237,9 @@ fn corpus() {
             Some(error) => failures.push(format!("{name}: {error}")),
             None => stats.identical += 1,
         }
+        for error in check_unwinding(&s, &mut stats) {
+            failures.push(format!("{name}: {error}"));
+        }
         if let (Some(tool), RunTimeEndian::Little) = (&tool, s.endian) {
             let expected =
                 llvm::ehabi_entries(s.exidx_data, s.extab_data, &llvm::Layout::Linked(s.bases));
@@ -236,6 +267,7 @@ fn corpus() {
         stats.files - stats.relocatable
     );
     eprintln!("  identical to llvm-readobj: {} files", stats.llvm_checked);
+    eprintln!("  frames unwound: {}", stats.unwound);
 
     for failure in failures.iter().take(50) {
         eprintln!("FAIL {failure}");
