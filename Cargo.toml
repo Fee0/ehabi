@@ -31,3 +31,7 @@ required-features = ["read"]
 [[test]]
 name = "elf_files"
 required-features = ["read", "write"]
+
+[[test]]
+name = "llvm_oracle"
+required-features = ["read", "write"]

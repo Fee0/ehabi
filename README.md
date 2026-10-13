@@ -190,3 +190,23 @@ verify:
 - a byte-identical read → `UnwindTable` → write round trip of a linked shared
   library;
 - address lookup of every function in the linked table.
+
+### Differential testing against LLVM
+
+`tests/llvm_oracle.rs` compares ehabi with LLVM's independent EHABI decoder,
+`llvm-readobj --unwind`, on the little-endian fixtures and on 8,000 randomly
+generated index entries written by ehabi. For every entry it checks the
+function address, model, personality index, `.ARM.extab` entry address,
+generic personality address, and every opcode of compact entries (byte
+grouping and meaning).
+
+Install the tool with `rustup component add llvm-tools`, or point
+`LLVM_READOBJ` at an `llvm-readobj` binary. Without it, the tests are
+skipped with a notice.
+
+`llvm-readobj` does not print descriptors or the contents of generic
+entries, and deviates from the EHABI in a few places that the test accounts
+for: big-endian files, the `0xb5` opcode (added in 2022Q3), `0xb1 0x00`, the
+count byte of inline personality 1 and 2 entries, uleb128 operands longer
+than 4 bytes, and VFP ranges beyond D31. The full list is in the test's
+documentation.
