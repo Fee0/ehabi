@@ -191,6 +191,33 @@ verify:
   library;
 - address lookup of every function in the linked table.
 
+### Robustness
+
+`tests/fuzz.rs` feeds random sections and mutations of the fixture sections,
+in both byte orders and with arbitrary base addresses, through every read
+path, `UnwindTable::from_read` and the writer. Every call must return `Ok`
+or `Err`; a panic or an endless loop fails the test. It runs 20,000
+iterations per input kind by default; set `EHABI_FUZZ_ITERATIONS` for longer
+runs (preferably in debug mode, where integer overflow panics).
+
+### Real-world corpus
+
+`tests/corpus.rs` checks every ELF file with an `.ARM.exidx` section in the
+directory named by `EHABI_CORPUS`: all entries must parse and decode, linked
+files must round-trip byte for byte through `UnwindTable`, and little-endian
+files must match `llvm-readobj`. `scripts/fetch_corpus.py` downloads a corpus
+of Debian `armhf` and `armel` packages (libstdc++, glibc, Qt, ICU, LLVM,
+Boost, OpenSSL and others; about 450 MB):
+
+```sh
+python scripts/fetch_corpus.py ../ehabi-corpus
+EHABI_CORPUS=../ehabi-corpus cargo test --release --test corpus -- --nocapture
+```
+
+On Debian 13.7 this covers 61 libraries with 281,470 index entries, all of
+which pass. GCC uses the generic model for C++, so the corpus contains no
+compact-model descriptors; those are covered by the clang fixtures.
+
 ### Differential testing against LLVM
 
 `tests/llvm_oracle.rs` compares ehabi with LLVM's independent EHABI decoder,

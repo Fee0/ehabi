@@ -35,3 +35,11 @@ required-features = ["read", "write"]
 [[test]]
 name = "llvm_oracle"
 required-features = ["read", "write"]
+
+[[test]]
+name = "corpus"
+required-features = ["read", "write"]
+
+[[test]]
+name = "fuzz"
+required-features = ["read", "write"]
