@@ -28,43 +28,6 @@ entries", "Personality routine exception-handling table entries" and "Frame
 unwinding instructions". The GCC/LLVM generic-model layout is not part of the
 EHABI. It follows libgcc (`unwind-arm-common.inc`, `pr-support.c`).
 
-## Structure (modelled on gimli)
-
-| gimli                                   | ehabi                                             |
-|-----------------------------------------|---------------------------------------------------|
-| `Endianity`, `LittleEndian`, `RunTimeEndian` | same                                         |
-| `read::Reader`, `EndianSlice`           | `read::Reader` (word-oriented, `usize` offsets), `EndianSlice` |
-| `read::RelocateReader` + `Relocate`     | same; hook is `relocate_word(offset, word)`       |
-| `read::Section`, `EhFrame::new(data, endian)` | `read::Section`, `ExIdx::new` / `ExTab::new` |
-| `BaseAddresses`                         | `BaseAddresses { exidx, extab }`                  |
-| iterators: `next() -> Result<Option<T>>` + `Iterator` + optional `FallibleIterator` | same |
-| `CallFrameInstruction`                  | `UnwindInstruction` (shared by read and write)    |
-| `write::Writer`, `EndianVec`, `RelocateWriter` | same; hooks `write_prel31`, `write_target2`, `write_dependency` |
-| `write::FrameTable` → `write_eh_frame`  | `write::UnwindTable` → `write(&mut Sections, &BaseAddresses)` |
-| `write::Dwarf::from(&read::Dwarf)`      | `write::UnwindTable::from_read(&exidx, &extab, &bases)` |
-
-```
-src/
-  lib.rs, common.rs, constants.rs, endianity.rs, leb128.rs
-  unwind.rs              UnwindInstruction: decoding, Display
-  read/
-    reader.rs            Reader trait
-    endian_slice.rs      EndianSlice
-    relocate.rs          Relocate, RelocateReader
-    exidx.rs             ExIdx, ExIdxEntry, binary-search lookup
-    extab.rs             ExTab, CompactEntry, GenericEntry, UnwindEntry
-    descriptors.rs       Descriptor (cleanup / catch / exception spec)
-    unwind.rs            UnwindBytes, UnwindInstructionIter
-  write/
-    writer.rs            Writer trait
-    endian_vec.rs        EndianVec
-    relocate.rs          RelocateWriter, Relocation
-    section.rs           ExIdx<W>, ExTab<W>, Sections<W>
-    table.rs             UnwindTable and entry types
-    unwind.rs            encoding + shortest-encoding helpers
-    convert.rs           read -> write conversion
-```
-
 ## Reading
 
 ```rust
@@ -157,17 +120,3 @@ as both ARM and Thumb). The tests cover:
   shared library
 * lookup of every function in the linked table
 
-To regenerate the fixtures:
-
-```sh
-cd tests/data
-clang --target=armv7a-none-eabi -c src/unwind.s -o unwind-armv7.o
-clang --target=armebv7a-none-eabi -c src/unwind.s -o unwind-armebv7.o
-clang++ --target=armv7a-linux-gnueabihf -O1 -fPIC -c src/eh.cpp -o eh-armv7.o
-clang++ --target=thumbv7a-linux-gnueabihf -DNS=thumb -O1 -fPIC -c src/eh.cpp -o eh-thumbv7.o
-ld.lld -shared -o eh-armv7.so eh-armv7.o eh-thumbv7.o unwind-armv7.o
-```
-
-## License
-
-MIT OR Apache-2.0, the same as gimli.

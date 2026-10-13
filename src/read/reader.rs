@@ -7,9 +7,8 @@ use crate::read::Result;
 /// A trait for reading the data from an EHABI section.
 ///
 /// All read operations advance the offset of the reader unless specified
-/// otherwise. This is a reduced form of `gimli::Reader`: the EHABI tables are
-/// always 32-bit and word oriented, so offsets are `usize` and there are no
-/// address-size or DWARF-format parameters.
+/// otherwise. The EHABI tables are always 32-bit and word oriented, so
+/// offsets are `usize` and there are no address-size parameters.
 #[allow(clippy::len_without_is_empty)]
 pub trait Reader: Debug + Clone {
     /// The endianity of bytes that are read.

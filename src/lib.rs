@@ -6,7 +6,7 @@
 //! <https://github.com/ARM-software/abi-aa>. This crate follows release
 //! 2025Q4 of that document, including the PACBTI-M unwinding instructions.
 //!
-//! The API is modelled on the [`gimli`](https://docs.rs/gimli) crate:
+//! The API is organised as follows:
 //!
 //! * The [`read`] module parses sections through the [`Reader`](read::Reader)
 //!   trait, with zero-copy [`EndianSlice`](read::EndianSlice) as the usual
@@ -33,7 +33,8 @@
 #![deny(missing_docs)]
 #![deny(missing_debug_implementations)]
 #![warn(elided_lifetimes_in_paths)]
-// Iterators have an inherent `next` returning `Result<Option<T>>`, as in gimli.
+// Iterators have an inherent `next` returning `Result<Option<T>>`, so that
+// errors propagate with `?`; they also implement `Iterator`.
 #![allow(clippy::should_implement_trait)]
 #![no_std]
 
