@@ -157,31 +157,42 @@ impl<M: Memory + ?Sized> Machine<'_, M> {
                 let mask = instruction.popped_core_registers().ok_or_else(reserved)?;
                 self.pop_core(mask)?;
             }
-            SetVsp(n) => {
-                if n == Registers::SP || n >= Registers::PC {
-                    return Err(reserved());
-                }
+            SetVsp(n) if n != Registers::SP && n < Registers::PC => {
                 self.vsp = self.regs.core(n).ok_or(Error::MissingRegister(n))?;
             }
             Finish => {}
-            PopVfpFstmx { first, count } => self.pop_fstmx(first, count, instruction)?,
-            PopVfpFstmxD8 { count } => self.pop_fstmx(8, count, instruction)?,
-            PopVfpVpush { first, count } => self.pop_vfp(first, count, 32, instruction)?,
-            PopVfpVpushD8 { count } => self.pop_vfp(8, count, 32, instruction)?,
+            // FSTMX saves D0-D15 only, with a format word after them.
+            PopVfpFstmx { first, count } if fits(first, count, 16) => {
+                self.pop_fstmx(first, count)?;
+            }
+            PopVfpFstmxD8 { count } if fits(8, count, 16) => self.pop_fstmx(8, count)?,
+            PopVfpVpush { first, count } if fits(first, count, 32) => self.pop_vfp(first, count)?,
+            PopVfpVpushD8 { count } if fits(8, count, 32) => self.pop_vfp(8, count)?,
             PopRaAuthCode => {
                 self.ra_auth_code = Some(self.read(self.vsp)?);
                 self.vsp = self.vsp.wrapping_add(4);
             }
             UseVspAsRaAuthModifier => self.ra_auth_modifier = Some(self.vsp),
-            PopWmmxWr10 { count } => self.skip_wmmx(10, count, instruction)?,
-            PopWmmx { first, count } => self.skip_wmmx(first, count, instruction)?,
-            PopWmmxControl { mask } => {
-                if mask == 0 || mask > 0xf {
-                    return Err(reserved());
-                }
+            // iWMMXt registers are skipped over, not tracked.
+            PopWmmxWr10 { count } if fits(10, count, 16) => {
+                self.vsp = self.vsp.wrapping_add(8 * u32::from(count));
+            }
+            PopWmmx { first, count } if fits(first, count, 16) => {
+                self.vsp = self.vsp.wrapping_add(8 * u32::from(count));
+            }
+            PopWmmxControl { mask } if (1..=0xf).contains(&mask) => {
                 self.vsp = self.vsp.wrapping_add(4 * mask.count_ones());
             }
-            Spare { .. } => return Err(reserved()),
+            // Registers beyond the architecture are reserved.
+            SetVsp(_)
+            | PopVfpFstmx { .. }
+            | PopVfpFstmxD8 { .. }
+            | PopVfpVpush { .. }
+            | PopVfpVpushD8 { .. }
+            | PopWmmxWr10 { .. }
+            | PopWmmx { .. }
+            | PopWmmxControl { .. }
+            | Spare { .. } => return Err(reserved()),
         }
         Ok(())
     }
@@ -213,18 +224,9 @@ impl<M: Memory + ?Sized> Machine<'_, M> {
         Ok(())
     }
 
-    /// Pop `D[first]..D[first + count - 1]` saved by VPUSH (or VSTM). A
-    /// range beyond `D[limit - 1]` is reserved.
-    fn pop_vfp(
-        &mut self,
-        first: u8,
-        count: u8,
-        limit: u32,
-        instruction: UnwindInstruction,
-    ) -> Result<()> {
-        if u32::from(first) + u32::from(count) > limit {
-            return Err(Error::ReservedInstruction(instruction));
-        }
+    /// Pop `D[first]..D[first + count - 1]`, lowest numbered at the lowest
+    /// address.
+    fn pop_vfp(&mut self, first: u8, count: u8) -> Result<()> {
         for n in first..first + count {
             let first_word = self.read(self.vsp)?;
             let second_word = self.read(self.vsp.wrapping_add(4))?;
@@ -241,21 +243,11 @@ impl<M: Memory + ?Sized> Machine<'_, M> {
         Ok(())
     }
 
-    /// Pop `D[first]..D[first + count - 1]` saved by FSTMX, which saves
-    /// D0-D15 only and adds a format word after the registers.
-    fn pop_fstmx(&mut self, first: u8, count: u8, instruction: UnwindInstruction) -> Result<()> {
-        self.pop_vfp(first, count, 16, instruction)?;
+    /// Pop `D[first]..D[first + count - 1]` saved by FSTMX, which stores a
+    /// format word after the registers.
+    fn pop_fstmx(&mut self, first: u8, count: u8) -> Result<()> {
+        self.pop_vfp(first, count)?;
         self.vsp = self.vsp.wrapping_add(4);
-        Ok(())
-    }
-
-    /// Skip over `wR[first]..wR[first + count - 1]`, which are not tracked.
-    /// A range beyond wR15 is reserved.
-    fn skip_wmmx(&mut self, first: u8, count: u8, instruction: UnwindInstruction) -> Result<()> {
-        if u32::from(first) + u32::from(count) > 16 {
-            return Err(Error::ReservedInstruction(instruction));
-        }
-        self.vsp = self.vsp.wrapping_add(8 * u32::from(count));
         Ok(())
     }
 
@@ -272,6 +264,11 @@ impl<M: Memory + ?Sized> Machine<'_, M> {
             .map(|_| self.ra_auth_modifier.unwrap_or(self.vsp));
         self.regs.set_ra_auth(self.ra_auth_code, modifier);
     }
+}
+
+/// Return true if registers `first..first + count` are below `limit`.
+fn fits(first: u8, count: u8, limit: u32) -> bool {
+    u32::from(first) + u32::from(count) <= limit
 }
 
 /// The unwinding tables of one loaded image.
@@ -347,17 +344,18 @@ impl<R: Reader> Module<R> {
             .exidx
             .find(address, &self.bases)?
             .ok_or(Error::NoUnwindInfo(pc))?;
-        let endian = self.exidx.reader().endian();
-        let mut caller = regs.clone();
-        match entry.resolve(&self.extab, &self.bases)? {
+        let instructions = match entry.resolve(&self.extab, &self.bases)? {
             UnwindEntry::CantUnwind => return Err(Error::CantUnwind),
-            UnwindEntry::Compact(entry) => {
-                execute(entry.instructions()?, &mut caller, memory, endian)?;
-            }
-            UnwindEntry::Generic(entry) => {
-                execute(entry.gnu_instructions()?, &mut caller, memory, endian)?;
-            }
-        }
+            UnwindEntry::Compact(entry) => entry.instructions()?,
+            UnwindEntry::Generic(entry) => entry.gnu_instructions()?,
+        };
+        let mut caller = regs.clone();
+        execute(
+            instructions,
+            &mut caller,
+            memory,
+            self.exidx.reader().endian(),
+        )?;
         Ok(caller)
     }
 }

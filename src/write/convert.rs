@@ -106,12 +106,12 @@ impl UnwindTable {
         }
 
         for (entry, offset) in index {
-            let data = match (entry.data(), offset) {
-                (read::ExIdxEntryData::CantUnwind, _) => IndexEntryData::CantUnwind,
-                (read::ExIdxEntryData::Inline(compact), _) => {
+            let data = match entry.data() {
+                read::ExIdxEntryData::CantUnwind => IndexEntryData::CantUnwind,
+                read::ExIdxEntryData::Inline(compact) => {
                     IndexEntryData::Inline(convert_compact(compact, bases)?)
                 }
-                (read::ExIdxEntryData::ExTab(_), offset) => {
+                read::ExIdxEntryData::ExTab(_) => {
                     let id = offset.and_then(|offset| extab_ids.get(&offset).copied());
                     IndexEntryData::ExTab(id.ok_or(read::Error::OffsetOutOfBounds)?)
                 }

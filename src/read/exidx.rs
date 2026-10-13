@@ -2,8 +2,8 @@ use crate::common::{BaseAddresses, ExIdxOffset, ExTabOffset, SectionId};
 use crate::constants;
 use crate::endianity::Endianity;
 use crate::read::{
-    CompactEntry, EndianSlice, Error, ExTab, ExTabEntry, Prel31, Reader, Result, Section,
-    UnwindEntry, base_address,
+    CompactEntry, EndianSlice, Error, ExTab, Prel31, Reader, Result, Section, UnwindEntry,
+    base_address,
 };
 
 /// The `.ARM.exidx` section: the exception index table.
@@ -125,11 +125,8 @@ impl<R: Reader> ExIdx<R> {
         while low < high {
             let mid = low + (high - low) / 2;
             let offset = mid * 8;
-            let word = self.section.range_from(offset)?.read_relocatable_u32()?;
-            if word & 0x8000_0000 != 0 {
-                return Err(Error::InvalidExIdxFunctionWord(word));
-            }
-            if Prel31::from_word(offset, word).address(exidx) <= address {
+            let function = read_function(&mut self.section.range_from(offset)?, offset)?;
+            if function.address(exidx) <= address {
                 low = mid + 1;
             } else {
                 high = mid;
@@ -201,11 +198,7 @@ pub enum ExIdxEntryData<R: Reader> {
 impl<R: Reader> ExIdxEntry<R> {
     fn parse(input: &mut R, section: &R) -> Result<Self> {
         let offset = input.offset_from(section);
-        let function_word = input.read_relocatable_u32()?;
-        if function_word & 0x8000_0000 != 0 {
-            return Err(Error::InvalidExIdxFunctionWord(function_word));
-        }
-        let function = Prel31::from_word(offset, function_word);
+        let function = read_function(input, offset)?;
         let word = input.read_relocatable_u32()?;
         let data = if word == constants::EXIDX_CANTUNWIND {
             ExIdxEntryData::CantUnwind
@@ -265,13 +258,10 @@ impl<R: Reader> ExIdxEntry<R> {
     /// Returns [`Error::MissingBaseAddress`] if the entry refers to
     /// `.ARM.extab` and `bases.exidx` or `bases.extab` is not set.
     pub fn extab_offset(&self, bases: &BaseAddresses) -> Result<Option<ExTabOffset>> {
-        let ExIdxEntryData::ExTab(reference) = self.data else {
-            return Ok(None);
-        };
-        let exidx = base_address(bases, SectionId::ArmExidx)?;
-        let extab = base_address(bases, SectionId::ArmExtab)?;
-        let address = reference.address(exidx);
-        Ok(Some(ExTabOffset(address.wrapping_sub(extab) as usize)))
+        match self.data {
+            ExIdxEntryData::ExTab(reference) => extab_offset(reference, bases).map(Some),
+            _ => Ok(None),
+        }
     }
 
     /// Return the unwinding information for this function, following the
@@ -289,15 +279,28 @@ impl<R: Reader> ExIdxEntry<R> {
         Ok(match &self.data {
             ExIdxEntryData::CantUnwind => UnwindEntry::CantUnwind,
             ExIdxEntryData::Inline(entry) => UnwindEntry::Compact(entry.clone()),
-            ExIdxEntryData::ExTab(_) => {
-                let offset = self.extab_offset(bases)?.ok_or(Error::OffsetOutOfBounds)?;
-                match extab.entry_at(offset)? {
-                    ExTabEntry::Compact(entry) => UnwindEntry::Compact(entry),
-                    ExTabEntry::Generic(entry) => UnwindEntry::Generic(entry),
-                }
+            ExIdxEntryData::ExTab(reference) => {
+                extab.entry_at(extab_offset(*reference, bases)?)?.into()
             }
         })
     }
+}
+
+/// Read the function word of an index entry at `offset`.
+fn read_function<R: Reader>(input: &mut R, offset: usize) -> Result<Prel31> {
+    let word = input.read_relocatable_u32()?;
+    if word & 0x8000_0000 != 0 {
+        return Err(Error::InvalidExIdxFunctionWord(word));
+    }
+    Ok(Prel31::from_word(offset, word))
+}
+
+/// Return the `.ARM.extab` offset that an index entry's reference points to.
+fn extab_offset(reference: Prel31, bases: &BaseAddresses) -> Result<ExTabOffset> {
+    let exidx = base_address(bases, SectionId::ArmExidx)?;
+    let extab = base_address(bases, SectionId::ArmExtab)?;
+    let address = reference.address(exidx);
+    Ok(ExTabOffset(address.wrapping_sub(extab) as usize))
 }
 
 #[cfg(test)]

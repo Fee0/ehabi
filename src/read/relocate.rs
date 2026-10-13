@@ -48,6 +48,10 @@ impl<T: Relocate + ?Sized> Relocate for &T {
 /// This is useful for reading sections in a relocatable object file. It is
 /// generally not needed for executables and shared libraries.
 ///
+/// The reader is cloned for every entry that is parsed, and `relocate` with
+/// it, so `T` should be cheap to clone: a reference (`&T` implements
+/// [`Relocate`]) or an `Rc`/`Arc` rather than an owned table.
+///
 /// ```
 /// use ehabi::read::{EndianSlice, ExIdx, Relocate, RelocateReader, Result, relocate_prel31};
 /// use ehabi::{BaseAddresses, LittleEndian};

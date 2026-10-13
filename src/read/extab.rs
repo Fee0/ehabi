@@ -112,6 +112,15 @@ pub enum UnwindEntry<R: Reader> {
     Generic(GenericEntry<R>),
 }
 
+impl<R: Reader> From<ExTabEntry<R>> for UnwindEntry<R> {
+    fn from(entry: ExTabEntry<R>) -> Self {
+        match entry {
+            ExTabEntry::Compact(entry) => UnwindEntry::Compact(entry),
+            ExTabEntry::Generic(entry) => UnwindEntry::Generic(entry),
+        }
+    }
+}
+
 /// An exception-handling table entry using the Arm-defined compact model.
 ///
 /// The first word has bit 31 set and selects a personality routine in bits

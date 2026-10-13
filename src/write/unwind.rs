@@ -73,7 +73,7 @@ impl UnwindInstruction {
                 }
             }
             PopCoreRange { last, lr } => {
-                if !(4..=11).contains(&last) {
+                if self.popped_core_registers().is_none() {
                     return Err(invalid());
                 }
                 let opcode = if lr {
@@ -202,12 +202,12 @@ impl UnwindInstruction {
         }
         let high = mask & 0xfff0;
         if high != 0 {
+            // Use the short r4-r[last] encoding if it pops exactly these.
+            let last = 15u8.saturating_sub((high & !(1 << 14)).leading_zeros() as u8);
             let lr = high & (1 << 14) != 0;
-            let rest = high & !(1 << 14);
-            let last = 15u8.saturating_sub(rest.leading_zeros() as u8);
-            let is_r4_range = (4..=11).contains(&last) && rest == ((1u16 << (last + 1)) - (1 << 4));
-            out.push(if is_r4_range {
-                UnwindInstruction::PopCoreRange { last, lr }
+            let range = UnwindInstruction::PopCoreRange { last, lr };
+            out.push(if range.popped_core_registers() == Some(high) {
+                range
             } else {
                 UnwindInstruction::PopCore { mask: high }
             });

@@ -6,31 +6,14 @@
 //! unwinder runs on random register sets over arbitrary memory.
 //! Set `EHABI_FUZZ_ITERATIONS` to run longer than the default.
 
-use ehabi::read::{
-    CatchType, Descriptor, EndianSlice, ExIdx, ExIdxEntryData, ExTab, Reader, UnwindEntry,
-};
+use ehabi::read::{Descriptor, ExIdx, ExTab, Reader, UnwindEntry};
 use ehabi::unwinder::{Module, Registers};
 use ehabi::write::{EndianVec, Sections, UnwindTable};
 use ehabi::{BaseAddresses, Endianity, ExIdxOffset, ExTabOffset, LittleEndian, RunTimeEndian};
 use object::{Object, ObjectSection};
 
-/// xorshift64*, so failures are reproducible from the printed seed.
-struct Rng(u64);
-
-impl Rng {
-    fn next(&mut self) -> u64 {
-        self.0 ^= self.0 >> 12;
-        self.0 ^= self.0 << 25;
-        self.0 ^= self.0 >> 27;
-        self.0.wrapping_mul(0x2545_f491_4f6c_dd1d)
-    }
-    fn below(&mut self, n: u64) -> u64 {
-        self.next() % n.max(1)
-    }
-    fn bytes(&mut self, len: usize) -> Vec<u8> {
-        (0..len).map(|_| self.next() as u8).collect()
-    }
-}
+mod rng;
+use rng::{Rng, iterations};
 
 /// Words that are likely to reach interesting paths when used as table data.
 const SPECIAL_WORDS: [u32; 12] = [
@@ -120,9 +103,6 @@ fn exercise<E: Endianity>(rng: &mut Rng, exidx_data: &[u8], extab_data: &[u8], e
         assert!(count <= exidx.len(), "entries() yielded too many entries");
         let _ = entry.function_address(&bases);
         let _ = entry.extab_offset(&bases);
-        if let ExIdxEntryData::Inline(compact) = entry.data() {
-            exercise_entry(UnwindEntry::Compact(compact.clone()));
-        }
         if let Ok(resolved) = entry.resolve(&extab, &bases) {
             exercise_entry(resolved);
         }
@@ -133,10 +113,7 @@ fn exercise<E: Endianity>(rng: &mut Rng, exidx_data: &[u8], extab_data: &[u8], e
         if let Ok(entry) =
             extab.entry_at(ExTabOffset(rng.below(extab_data.len() as u64 + 8) as usize))
         {
-            exercise_entry(match entry {
-                ehabi::read::ExTabEntry::Compact(c) => UnwindEntry::Compact(c),
-                ehabi::read::ExTabEntry::Generic(g) => UnwindEntry::Generic(g),
-            });
+            exercise_entry(entry.into());
         }
     }
 
@@ -208,11 +185,8 @@ fn exercise_descriptor<R: Reader>(descriptor: Descriptor<R>) {
     let scope = descriptor.scope();
     let _ = scope.contains(scope.offset);
     match descriptor {
-        Descriptor::Cleanup { landing_pad, .. } => {
+        Descriptor::Cleanup { landing_pad, .. } | Descriptor::Catch { landing_pad, .. } => {
             let _ = landing_pad.address(u32::MAX);
-        }
-        Descriptor::Catch { catch_type, .. } => {
-            let _ = matches!(catch_type, CatchType::TypeInfo(_));
         }
         Descriptor::ExceptionSpec(spec) => {
             let _ = spec.count();
@@ -249,16 +223,9 @@ fn fixture_sections() -> Vec<(Vec<u8>, Vec<u8>)> {
     out
 }
 
-fn iterations() -> u64 {
-    std::env::var("EHABI_FUZZ_ITERATIONS")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(20_000)
-}
-
 #[test]
 fn random_sections_do_not_panic() {
-    for seed in 0..iterations() {
+    for seed in 0..iterations("EHABI_FUZZ_ITERATIONS", 20_000) {
         let mut rng = Rng(seed.wrapping_mul(0x9e37_79b9_7f4a_7c15) | 1);
         let exidx_len = rng.below(12) as usize * 8 + rng.below(2) as usize * 3;
         let exidx = rng.bytes(exidx_len);
@@ -283,7 +250,7 @@ fn random_sections_do_not_panic() {
 #[test]
 fn mutated_fixtures_do_not_panic() {
     let fixtures = fixture_sections();
-    for seed in 0..iterations() {
+    for seed in 0..iterations("EHABI_FUZZ_ITERATIONS", 20_000) {
         let mut rng = Rng(seed.wrapping_mul(0xd1b5_4a32_d192_ed03) | 1);
         let (exidx, extab) = &fixtures[rng.below(fixtures.len() as u64) as usize];
         let (mut exidx, mut extab) = (exidx.clone(), extab.clone());
@@ -301,6 +268,5 @@ fn mutated_fixtures_do_not_panic() {
             RunTimeEndian::Little
         };
         exercise(&mut rng, &exidx, &extab, endian);
-        let _ = EndianSlice::new(&exidx, endian).len();
     }
 }

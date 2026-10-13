@@ -87,29 +87,19 @@ fn check_entries(s: &elf::EhSections<'_>, stats: &mut Stats) -> Vec<String> {
                 *stats.models.entry(model).or_default() += 1;
                 match compact.instructions() {
                     Ok(iter) => {
-                        for instruction in iter {
-                            match instruction {
-                                Ok(_) => stats.instructions += 1,
-                                Err(e) => {
-                                    errors.push(format!("entry 0x{at:x}: instruction: {e}"));
-                                    break;
-                                }
-                            }
-                        }
+                        count_items(
+                            iter,
+                            &mut stats.instructions,
+                            &mut errors,
+                            at,
+                            "instruction",
+                        );
                     }
                     Err(e) => errors.push(format!("entry 0x{at:x}: instructions: {e}")),
                 }
                 match compact.descriptors() {
                     Ok(Some(iter)) => {
-                        for descriptor in iter {
-                            match descriptor {
-                                Ok(_) => stats.descriptors += 1,
-                                Err(e) => {
-                                    errors.push(format!("entry 0x{at:x}: descriptor: {e}"));
-                                    break;
-                                }
-                            }
-                        }
+                        count_items(iter, &mut stats.descriptors, &mut errors, at, "descriptor");
                     }
                     Ok(None) => {}
                     Err(e) => errors.push(format!("entry 0x{at:x}: descriptors: {e}")),
@@ -155,6 +145,25 @@ fn check_unwinding(s: &elf::EhSections<'_>, stats: &mut Stats) -> Vec<String> {
         }
     }
     errors
+}
+
+/// Count the items of a fallible iterator, recording the first error.
+fn count_items<T>(
+    items: impl Iterator<Item = ehabi::read::Result<T>>,
+    count: &mut usize,
+    errors: &mut Vec<String>,
+    at: usize,
+    what: &str,
+) {
+    for item in items {
+        match item {
+            Ok(_) => *count += 1,
+            Err(e) => {
+                errors.push(format!("entry 0x{at:x}: {what}: {e}"));
+                break;
+            }
+        }
+    }
 }
 
 /// Check the byte-exact round trip, returning a description of a failure.

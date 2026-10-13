@@ -29,7 +29,9 @@ use ehabi::write::{
 use ehabi::{BaseAddresses, LittleEndian, PersonalityIndex, Scope, UnwindInstruction};
 
 mod llvm;
+mod rng;
 use llvm::{Layout, compare, ehabi_entries, llvm_readobj};
+use rng::Rng;
 
 // ---------------------------------------------------------------------------
 // Fixtures built by clang
@@ -85,27 +87,6 @@ fn fixtures_match_llvm() {
 // ---------------------------------------------------------------------------
 // Random tables written by ehabi
 // ---------------------------------------------------------------------------
-
-/// xorshift64*: a small deterministic generator, so failures are reproducible.
-struct Rng(u64);
-
-impl Rng {
-    fn next(&mut self) -> u64 {
-        self.0 ^= self.0 >> 12;
-        self.0 ^= self.0 << 25;
-        self.0 ^= self.0 >> 27;
-        self.0.wrapping_mul(0x2545_f491_4f6c_dd1d)
-    }
-    fn below(&mut self, n: u64) -> u64 {
-        self.next() % n
-    }
-    fn byte(&mut self) -> u8 {
-        self.next() as u8
-    }
-    fn chance(&mut self, percent: u64) -> bool {
-        self.below(100) < percent
-    }
-}
 
 /// A random instruction from the whole encoding space, decoded from random
 /// bytes, excluding the encodings llvm-readobj is known to mishandle.

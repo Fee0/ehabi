@@ -10,8 +10,14 @@
 /// still hold the values from the frame that was unwound.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Registers {
-    core: [Option<u32>; 16],
-    vfp: [Option<u64>; 32],
+    // Unknown registers hold 0, so that the derived `PartialEq` compares
+    // only what is known.
+    core: [u32; 16],
+    vfp: [u64; 32],
+    /// Bit `n` is set if `rN` is known.
+    known_core: u16,
+    /// Bit `n` is set if `D[n]` is known.
+    known_vfp: u32,
     ra_auth_code: Option<u32>,
     ra_auth_modifier: Option<u32>,
 }
@@ -34,7 +40,8 @@ impl Registers {
     #[must_use]
     pub fn from_core(core: [u32; 16]) -> Self {
         Registers {
-            core: core.map(Some),
+            core,
+            known_core: 0xffff,
             ..Self::default()
         }
     }
@@ -45,7 +52,7 @@ impl Registers {
     #[inline]
     #[must_use]
     pub fn core(&self, n: u8) -> Option<u32> {
-        self.core.get(usize::from(n)).copied().flatten()
+        (n < 16 && self.known_core & (1 << n) != 0).then(|| self.core[usize::from(n)])
     }
 
     /// Set the value of core register `rN`.
@@ -55,7 +62,8 @@ impl Registers {
     /// Panics if `n >= 16`.
     #[inline]
     pub fn set_core(&mut self, n: u8, value: u32) {
-        self.core[usize::from(n)] = Some(value);
+        self.core[usize::from(n)] = value;
+        self.known_core |= 1 << n;
     }
 
     /// Mark core register `rN` as unknown.
@@ -65,7 +73,8 @@ impl Registers {
     /// Panics if `n >= 16`.
     #[inline]
     pub fn clear_core(&mut self, n: u8) {
-        self.core[usize::from(n)] = None;
+        self.core[usize::from(n)] = 0;
+        self.known_core &= !(1 << n);
     }
 
     /// Return the stack pointer, r13, if it is known.
@@ -98,7 +107,7 @@ impl Registers {
     #[inline]
     #[must_use]
     pub fn vfp(&self, n: u8) -> Option<u64> {
-        self.vfp.get(usize::from(n)).copied().flatten()
+        (n < 32 && self.known_vfp & (1 << n) != 0).then(|| self.vfp[usize::from(n)])
     }
 
     /// Set the value of VFP register `D[n]`.
@@ -108,7 +117,8 @@ impl Registers {
     /// Panics if `n >= 32`.
     #[inline]
     pub fn set_vfp(&mut self, n: u8, value: u64) {
-        self.vfp[usize::from(n)] = Some(value);
+        self.vfp[usize::from(n)] = value;
+        self.known_vfp |= 1 << n;
     }
 
     /// Return the Return Address Authentication Code popped while unwinding

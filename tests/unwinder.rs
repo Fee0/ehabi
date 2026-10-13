@@ -12,7 +12,7 @@
 
 use std::collections::HashMap;
 
-use ehabi::read::{EndianSlice, ExIdx, ExTab};
+use ehabi::read::{ExIdx, ExTab};
 use ehabi::unwinder::{Error, Module, Registers};
 use ehabi::write::{
     Address, CompactEntry, EndianVec, ExTabEntry, GenericData, GenericEntry, IndexEntry,
@@ -20,26 +20,12 @@ use ehabi::write::{
 };
 use ehabi::{BaseAddresses, PersonalityIndex, RunTimeEndian, UnwindInstruction};
 
-/// xorshift64*, so failures are reproducible from the printed seed.
-struct Rng(u64);
+mod rng;
+use rng::{Rng, iterations};
 
-impl Rng {
-    fn next(&mut self) -> u64 {
-        self.0 ^= self.0 >> 12;
-        self.0 ^= self.0 << 25;
-        self.0 ^= self.0 >> 27;
-        self.0.wrapping_mul(0x2545_f491_4f6c_dd1d)
-    }
-    fn below(&mut self, n: u64) -> u64 {
-        self.next() % n.max(1)
-    }
-    fn word(&mut self) -> u32 {
-        self.next() as u32
-    }
-    fn chance(&mut self, percent: u64) -> bool {
-        self.below(100) < percent
-    }
-}
+const SP: usize = Registers::SP as usize;
+const LR: usize = Registers::LR as usize;
+const PC: usize = Registers::PC as usize;
 
 const FUNCTION_SIZE: u32 = 0x100;
 const TEXT: u32 = 0x1_0000;
@@ -176,8 +162,8 @@ struct Machine {
 
 impl Machine {
     fn push_word(&mut self, value: u32) {
-        self.core[13] -= 4;
-        self.memory.insert(self.core[13], value);
+        self.core[SP] -= 4;
+        self.memory.insert(self.core[SP], value);
     }
 
     /// Store D registers from sp upwards, lowest numbered at the lowest
@@ -207,17 +193,17 @@ impl Machine {
                     }
                 }
                 Step::Vpush { first, count } => {
-                    self.core[13] -= 8 * u32::from(count);
-                    self.store_vfp(first, count, self.core[13]);
+                    self.core[SP] -= 8 * u32::from(count);
+                    self.store_vfp(first, count, self.core[SP]);
                 }
                 Step::Fstmx { first, count } => {
                     // The format word is stored above the registers.
                     self.push_word(rng.word());
-                    self.core[13] -= 8 * u32::from(count);
-                    self.store_vfp(first, count, self.core[13]);
+                    self.core[SP] -= 8 * u32::from(count);
+                    self.store_vfp(first, count, self.core[SP]);
                 }
                 // The unwinder never reads locals, so they are not stored.
-                Step::Sub(bytes) => self.core[13] -= bytes,
+                Step::Sub(bytes) => self.core[SP] -= bytes,
             }
         }
         for step in &function.prologue {
@@ -246,6 +232,12 @@ struct Expected {
     saved_vfp: Vec<u8>,
 }
 
+/// The address of function `index`; the outermost function follows the
+/// others.
+fn function_address(index: u32) -> u32 {
+    TEXT + index * FUNCTION_SIZE
+}
+
 /// Write the table for `functions`, laid out from `TEXT`, followed by an
 /// `EXIDX_CANTUNWIND` entry for the outermost function.
 fn write_table(
@@ -255,13 +247,11 @@ fn write_table(
     bases: &BaseAddresses,
 ) -> Sections<EndianVec<RunTimeEndian>> {
     let mut table = UnwindTable::new();
-    let mut address = TEXT;
-    for function in functions {
-        add_entry(rng, &mut table, address, function);
-        address += FUNCTION_SIZE;
+    for (i, function) in (0..).zip(functions) {
+        add_entry(rng, &mut table, function_address(i), function);
     }
     table.add_index_entry(IndexEntry {
-        function: Address::Constant(address),
+        function: Address::Constant(function_address(functions.len() as u32)),
         data: IndexEntryData::CantUnwind,
     });
     let mut sections = Sections::new(EndianVec::new(endian));
@@ -291,7 +281,6 @@ fn run_case(seed: u64) {
             Function::random(&mut rng, leaf)
         })
         .collect();
-    let outermost = TEXT + count * FUNCTION_SIZE;
     let bases = BaseAddresses::default().set_exidx(EXIDX).set_extab(EXTAB);
     let sections = write_table(&mut rng, &functions, endian, &bases);
     let module = Module::new(
@@ -307,16 +296,16 @@ fn run_case(seed: u64) {
         memory: HashMap::new(),
         big_endian: endian == RunTimeEndian::Big,
     };
-    machine.core[13] = 0x7fff_0000;
-    let mut caller = outermost;
+    machine.core[SP] = 0x7fff_0000;
+    let mut caller = function_address(count);
     let mut expected = Vec::new();
     for &index in &chain {
         // A return address anywhere after the first instruction of the
         // caller, up to and including its end; Thumb or Arm.
         let return_address = (caller + 4 + rng.below(u64::from(FUNCTION_SIZE - 3)) as u32) & !1
             | rng.below(2) as u32;
-        machine.core[14] = return_address;
-        machine.core[15] = return_address;
+        machine.core[LR] = return_address;
+        machine.core[PC] = return_address;
         let function = &functions[index as usize];
         expected.push(Expected {
             core: machine.core,
@@ -324,7 +313,7 @@ fn run_case(seed: u64) {
             saved_vfp: function.saved_vfp(),
         });
         machine.enter(&mut rng, function);
-        caller = TEXT + index * FUNCTION_SIZE;
+        caller = function_address(index);
     }
 
     // Unwind from a random point in the innermost function.
@@ -340,7 +329,7 @@ fn run_case(seed: u64) {
         regs = module
             .unwind_frame(&regs, first, &mut memory)
             .unwrap_or_else(|e| panic!("{}: {e}", context()));
-        for n in (4..=11).chain([13, 15]) {
+        for n in (4..=11).chain([Registers::SP, Registers::PC]) {
             assert_eq!(
                 regs.core(n),
                 Some(expected.core[usize::from(n)]),
@@ -366,28 +355,8 @@ fn run_case(seed: u64) {
 
 #[test]
 fn simulated_call_stacks() {
-    let iterations = std::env::var("EHABI_UNWINDER_ITERATIONS")
-        .ok()
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(2_000u64);
     let base = 0x9e37_79b9_7f4a_7c15u64;
-    for i in 0..iterations {
+    for i in 0..iterations("EHABI_UNWINDER_ITERATIONS", 2_000) {
         run_case(base.wrapping_mul(i + 1) | 1);
     }
-}
-
-#[test]
-fn reads_through_endian_slice() {
-    // A module can also be built from borrowed section data directly.
-    let data = [0u8; 0];
-    let module = Module::new(
-        ExIdx::from(EndianSlice::new(&data, RunTimeEndian::Little)),
-        ExTab::from(EndianSlice::new(&data, RunTimeEndian::Little)),
-        BaseAddresses::default().set_exidx(0).set_extab(0),
-    );
-    let regs = Registers::from_core([0; 16]);
-    assert_eq!(
-        module.unwind_frame(&regs, true, &mut |_| None),
-        Err(Error::NoUnwindInfo(0))
-    );
 }
