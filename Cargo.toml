@@ -1,0 +1,33 @@
+[package]
+name = "ehabi"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.88"
+description = "A library for reading and writing the Arm EHABI exception tables (.ARM.exidx and .ARM.extab)."
+license = "MIT OR Apache-2.0"
+keywords = ["arm", "ehabi", "unwind", "exidx", "elf"]
+categories = ["development-tools::debugging", "parser-implementations", "no-std"]
+readme = "README.md"
+
+[features]
+default = ["read", "write"]
+# Reading `.ARM.exidx` / `.ARM.extab`.
+read = []
+# Writing `.ARM.exidx` / `.ARM.extab`.
+write = []
+# Implement `fallible_iterator::FallibleIterator` for the iterators.
+fallible-iterator = ["dep:fallible-iterator"]
+
+[dependencies]
+fallible-iterator = { version = "0.3.0", default-features = false, optional = true }
+
+[dev-dependencies]
+object = { version = "0.36", default-features = false, features = ["read", "std"] }
+
+[[example]]
+name = "ehdump"
+required-features = ["read"]
+
+[[test]]
+name = "elf_files"
+required-features = ["read", "write"]
