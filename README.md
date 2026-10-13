@@ -1,5 +1,7 @@
 # ehabi
 
+[![Crates.io](https://img.shields.io/crates/v/ehabi.svg)](https://crates.io/crates/ehabi)
+[![Docs.rs](https://docs.rs/ehabi/badge.svg)](https://docs.rs/ehabi)
 [![CI](https://github.com/Fee0/ehabi/actions/workflows/ci.yml/badge.svg)](https://github.com/Fee0/ehabi/actions/workflows/ci.yml)
 [![MSRV 1.88](https://img.shields.io/badge/MSRV-1.88-blue.svg)](#installation)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
@@ -49,11 +51,9 @@ libgcc (`unwind-arm-common.inc`, `pr-support.c`) for it.
 
 ## Installation
 
-The crate is not yet published on crates.io. Add it as a Git dependency:
-
 ```toml
 [dependencies]
-ehabi = { git = "https://github.com/Fee0/ehabi" }
+ehabi = "0.1"
 ```
 
 Minimum supported Rust version: **1.88** (edition 2024).

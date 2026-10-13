@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-10-14
+
+Initial release.
+
 ### Added
 
 - Reading of `.ARM.exidx` and `.ARM.extab` as specified by EHABI32 release
@@ -27,4 +31,5 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `unwinder::Module::unwind_frame` unwinds one frame of a stopped program.
 - The `ehdump` example, which dumps the tables of an ELF file.
 
-[Unreleased]: https://github.com/Fee0/ehabi/commits/main
+[Unreleased]: https://github.com/Fee0/ehabi/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/Fee0/ehabi/releases/tag/v0.1.0
