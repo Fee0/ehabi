@@ -35,6 +35,9 @@ pub enum Error {
     InvalidExTabEntryId,
     /// A write was attempted beyond the end of the section.
     OffsetOutOfBounds,
+    /// The `lsda` crate could not write the LSDA of a generic-model entry.
+    #[cfg(feature = "lsda")]
+    Lsda(lsda::write::Error),
 }
 
 impl fmt::Display for Error {
@@ -77,11 +80,21 @@ impl fmt::Display for Error {
             }
             Error::InvalidExTabEntryId => f.write_str("invalid .ARM.extab entry id"),
             Error::OffsetOutOfBounds => f.write_str("offset out of bounds"),
+            #[cfg(feature = "lsda")]
+            Error::Lsda(e) => write!(f, "cannot write LSDA: {e}"),
         }
     }
 }
 
-impl core::error::Error for Error {}
+impl core::error::Error for Error {
+    #[cfg(feature = "lsda")]
+    fn source(&self) -> Option<&(dyn core::error::Error + 'static)> {
+        match self {
+            Error::Lsda(e) => Some(e),
+            _ => None,
+        }
+    }
+}
 
 /// The result of a write.
 pub type Result<T> = result::Result<T, Error>;

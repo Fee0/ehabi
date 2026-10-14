@@ -35,6 +35,12 @@
 //!   implies `read`.
 //! * `fallible-iterator`: implement `fallible_iterator::FallibleIterator`
 //!   for the iterators.
+//! * `lsda`: read and write the language-specific data area (LSDA) of
+//!   generic-model entries with the [`lsda`](https://docs.rs/lsda) crate:
+//!   `GenericEntry::parse_gnu_lsda` and `LsdaReader` when reading,
+//!   `GenericData::GnuLsda` when writing, and
+//!   `UnwindTable::from_read_with_lsdas` to convert. The byte order types also
+//!   implement `lsda::Endianity`.
 //!
 //! The crate is `no_std` and requires `alloc`. The error types implement
 //! `core::error::Error`.

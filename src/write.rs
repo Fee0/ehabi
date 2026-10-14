@@ -77,6 +77,9 @@ pub use self::unwind::*;
 mod table;
 pub use self::table::*;
 
+#[cfg(feature = "lsda")]
+mod gnu_lsda;
+
 #[cfg(feature = "read")]
 mod convert;
 #[cfg(feature = "read")]

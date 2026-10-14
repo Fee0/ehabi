@@ -129,6 +129,33 @@ impl Endianity for BigEndian {
     }
 }
 
+// The same byte orders for the `lsda` crate, so that they can be passed to
+// its readers and writers.
+#[cfg(feature = "lsda")]
+macro_rules! impl_lsda_endianity {
+    ($($endian:ty),*) => {$(
+        impl lsda::Endianity for $endian {
+            #[inline]
+            fn is_big_endian(self) -> bool {
+                Endianity::is_big_endian(self)
+            }
+        }
+    )*};
+}
+
+#[cfg(feature = "lsda")]
+impl_lsda_endianity!(RunTimeEndian, LittleEndian, BigEndian);
+
+/// Return the byte order `endian` for the `lsda` crate.
+#[cfg(all(feature = "lsda", any(feature = "read", feature = "write")))]
+pub(crate) fn lsda_endian<E: Endianity>(endian: E) -> lsda::RunTimeEndian {
+    if endian.is_big_endian() {
+        lsda::RunTimeEndian::Big
+    } else {
+        lsda::RunTimeEndian::Little
+    }
+}
+
 /// The native endianity for the target platform.
 #[cfg(target_endian = "little")]
 pub type NativeEndian = LittleEndian;

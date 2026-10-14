@@ -112,6 +112,11 @@ pub use self::extab::*;
 mod descriptors;
 pub use self::descriptors::*;
 
+#[cfg(feature = "lsda")]
+mod gnu_lsda;
+#[cfg(feature = "lsda")]
+pub use self::gnu_lsda::*;
+
 /// Return the address of `section`, or an error if it is not known.
 pub(crate) fn base_address(bases: &BaseAddresses, section: SectionId) -> Result<u32> {
     bases.get(section).ok_or(Error::MissingBaseAddress(section))

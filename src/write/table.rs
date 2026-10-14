@@ -128,6 +128,13 @@ impl UnwindTable {
     /// [`Error::TooManyTypeInfos`], or [`Error::InvalidExTabEntryId`] for an
     /// index entry that refers to an unknown `.ARM.extab` entry. Also returns
     /// the errors of [`Writer::write_prel31`] and of the section writers.
+    ///
+    /// With the `lsda` feature, a [`GenericData::GnuLsda`] entry can also
+    /// return `Error::Lsda` if its LSDA cannot be written,
+    /// [`Error::MissingBaseAddress`] for `.ARM.extab` if it has pc-relative
+    /// pointers and `bases` has no `.ARM.extab` address, and
+    /// [`Error::InvalidAddress`] for a symbol address that is not a type
+    /// reference, or that the writer cannot relocate.
     pub fn write<W: Writer>(
         &self,
         sections: &mut Sections<W>,
@@ -319,6 +326,7 @@ pub struct GenericEntry {
 
 /// The data of a [`GenericEntry`].
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum GenericData {
     /// The layout used by GCC and LLVM for personality routines such as
     /// `__gxx_personality_v0`: a word holding the count N of additional
@@ -335,6 +343,24 @@ pub enum GenericData {
         /// recorded.
         lsda: Vec<u8>,
     },
+    /// The GCC/LLVM layout of [`Gnu`](Self::Gnu), with the LSDA as a model of
+    /// the `lsda` crate.
+    ///
+    /// The LSDA is written in place in `.ARM.extab`, so pc-relative pointers
+    /// (such as GCC's `@TType` encoding) are computed from where it ends up,
+    /// the `.ARM.extab` address of the [`BaseAddresses`]. Symbol references
+    /// to `type_info` objects are recorded as `R_ARM_TARGET2` relocations if
+    /// the writer records relocations. Other pointers, such as `@LPStart`,
+    /// must be constant addresses. If another entry follows, zero padding up
+    /// to the next word boundary is added before it.
+    #[cfg(feature = "lsda")]
+    GnuLsda {
+        /// The frame unwinding instructions. Padding with *Finish* is added
+        /// when written.
+        instructions: Vec<UnwindInstruction>,
+        /// The language-specific data area.
+        lsda: lsda::write::Lsda,
+    },
     /// Uninterpreted data. If another entry follows, zero padding up to the
     /// next word boundary is added before it.
     Raw(Vec<u8>),
@@ -350,12 +376,13 @@ impl GenericEntry {
         )?;
         match &self.data {
             GenericData::Gnu { instructions, lsda } => {
-                let packed = pack_unwind_instructions(instructions, 3)?;
-                w.write_u32(((packed.words.len() as u32) << 24) | packed.head)?;
-                for word in packed.words {
-                    w.write_u32(word)?;
-                }
+                write_gnu_instructions(w, instructions)?;
                 w.write(lsda)?;
+            }
+            #[cfg(feature = "lsda")]
+            GenericData::GnuLsda { instructions, lsda } => {
+                write_gnu_instructions(w, instructions)?;
+                crate::write::gnu_lsda::write_lsda(w, 0, lsda, bases)?;
             }
             GenericData::Raw(data) => w.write(data)?,
         }
@@ -363,6 +390,18 @@ impl GenericEntry {
         // padded, so the section can end mid-word, as GNU ld leaves it.
         Ok(())
     }
+}
+
+/// Write the unwinding instructions of the GCC/LLVM layout: a word with the
+/// count of additional words in its top byte and three instruction bytes,
+/// then the additional words.
+fn write_gnu_instructions<W: Writer>(w: &mut W, instructions: &[UnwindInstruction]) -> Result<()> {
+    let packed = pack_unwind_instructions(instructions, 3)?;
+    w.write_u32(((packed.words.len() as u32) << 24) | packed.head)?;
+    for word in packed.words {
+        w.write_u32(word)?;
+    }
+    Ok(())
 }
 
 /// A descriptor in a compact-model exception-handling table entry.

@@ -1,6 +1,6 @@
 [package]
 name = "ehabi"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 rust-version = "1.88"
 description = "Read, write and unwind with the Arm EHABI exception tables (.ARM.exidx and .ARM.extab)."
@@ -25,16 +25,19 @@ rustdoc-args = ["--cfg", "docsrs"]
 [features]
 default = ["read", "write", "unwinder"]
 # Reading `.ARM.exidx` / `.ARM.extab`.
-read = []
+read = ["lsda?/read"]
 # Writing `.ARM.exidx` / `.ARM.extab`.
-write = []
+write = ["lsda?/write"]
 # The virtual unwinder.
 unwinder = ["read"]
 # Implement `fallible_iterator::FallibleIterator` for the iterators.
 fallible-iterator = ["dep:fallible-iterator"]
+# Read and write the LSDAs of generic-model entries with the `lsda` crate.
+lsda = ["dep:lsda"]
 
 [dependencies]
 fallible-iterator = { version = "0.3.0", default-features = false, optional = true }
+lsda = { version = "0.1", default-features = false, optional = true }
 
 [dev-dependencies]
 object = { version = "0.36", default-features = false, features = ["read", "std"] }
@@ -62,6 +65,10 @@ required-features = ["write", "unwinder"]
 [[test]]
 name = "unwinder"
 required-features = ["write", "unwinder"]
+
+[[test]]
+name = "lsda"
+required-features = ["read", "write", "lsda"]
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ["cfg(docsrs)"] }

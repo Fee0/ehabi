@@ -10,6 +10,8 @@ use crate::write::{
     Address, CatchType, CompactEntry, Descriptor, Error, ExTabEntry, GenericData, GenericEntry,
     IndexEntry, IndexEntryData, UnwindTable, encode_unwind_instructions,
 };
+#[cfg(feature = "lsda")]
+use crate::write::{EndianVec, Writer};
 
 /// An error that occurred when converting a read value into a write value.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -82,50 +84,95 @@ impl UnwindTable {
         extab: &read::ExTab<R>,
         bases: &BaseAddresses,
     ) -> ConvertResult<UnwindTable> {
-        let mut index = Vec::new();
-        let mut offsets = BTreeSet::new();
-        let mut entries = exidx.entries();
-        while let Some(entry) = entries.next()? {
-            let offset = entry.extab_offset(bases)?.map(|offset| offset.0);
-            offsets.extend(offset);
-            index.push((entry, offset));
-        }
-
-        let mut table = UnwindTable::new();
-        let section_len = extab.reader().len();
-        let mut extab_ids = BTreeMap::new();
-        let mut offsets = offsets.into_iter().peekable();
-        while let Some(offset) = offsets.next() {
-            let end = offsets.peek().copied().unwrap_or(section_len);
-            let entry = match extab.entry_at(ExTabOffset(offset))? {
-                read::ExTabEntry::Compact(entry) => {
-                    ExTabEntry::Compact(convert_compact(&entry, bases)?)
-                }
-                read::ExTabEntry::Generic(entry) => {
-                    ExTabEntry::Generic(convert_generic(entry, end, bases)?)
-                }
-            };
-            extab_ids.insert(offset, table.add_extab_entry(entry));
-        }
-
-        for (entry, offset) in index {
-            let data = match entry.data() {
-                read::ExIdxEntryData::CantUnwind => IndexEntryData::CantUnwind,
-                read::ExIdxEntryData::Inline(compact) => {
-                    IndexEntryData::Inline(convert_compact(compact, bases)?)
-                }
-                read::ExIdxEntryData::ExTab(_) => {
-                    let id = offset.and_then(|offset| extab_ids.get(&offset).copied());
-                    IndexEntryData::ExTab(id.ok_or(read::Error::OffsetOutOfBounds)?)
-                }
-            };
-            table.add_index_entry(IndexEntry {
-                function: Address::Constant(entry.function_address(bases)?),
-                data,
-            });
-        }
-        Ok(table)
+        convert_tables(exidx, extab, bases, false)
     }
+
+    /// Create a table from parsed `.ARM.exidx` and `.ARM.extab` sections, as
+    /// [`from_read`](Self::from_read) does, with the LSDA of each
+    /// GCC/LLVM-layout entry as a model of the `lsda` crate:
+    /// [`GenericData::GnuLsda`] instead of [`GenericData::Gnu`].
+    ///
+    /// An LSDA is converted only if writing it in place reproduces its bytes
+    /// exactly, as [`lsda::write::GccExceptTable::from_read`] requires, with
+    /// the padding before the next entry; otherwise the entry stays
+    /// [`GenericData::Gnu`]. Its pointers become constant addresses, so a
+    /// [`GnuLsda`](GenericData::GnuLsda) stays correct when entries move.
+    ///
+    /// Like [`from_read`](Self::from_read), this is for linked images. In a
+    /// relocatable object, read through a
+    /// [`RelocateReader`](read::RelocateReader), a type reference becomes the
+    /// constant that its relocation gives, and no longer refers to its
+    /// symbol.
+    ///
+    /// The personality routine is not checked: the data of any entry whose
+    /// instructions follow the GCC/LLVM layout is converted if the rest reads
+    /// and writes back exactly as an LSDA. For tables that use personality
+    /// routines with another data format, use [`from_read`](Self::from_read),
+    /// which keeps the data as bytes.
+    ///
+    /// # Errors
+    ///
+    /// Returns the errors of [`from_read`](Self::from_read).
+    #[cfg(feature = "lsda")]
+    pub fn from_read_with_lsdas<R: Reader>(
+        exidx: &read::ExIdx<R>,
+        extab: &read::ExTab<R>,
+        bases: &BaseAddresses,
+    ) -> ConvertResult<UnwindTable> {
+        convert_tables(exidx, extab, bases, true)
+    }
+}
+
+/// Convert the tables, and the LSDAs if `lsdas` is set.
+fn convert_tables<R: Reader>(
+    exidx: &read::ExIdx<R>,
+    extab: &read::ExTab<R>,
+    bases: &BaseAddresses,
+    lsdas: bool,
+) -> ConvertResult<UnwindTable> {
+    let mut index = Vec::new();
+    let mut offsets = BTreeSet::new();
+    let mut entries = exidx.entries();
+    while let Some(entry) = entries.next()? {
+        let offset = entry.extab_offset(bases)?.map(|offset| offset.0);
+        offsets.extend(offset);
+        index.push((entry, offset));
+    }
+
+    let mut table = UnwindTable::new();
+    let section_len = extab.reader().len();
+    let mut extab_ids = BTreeMap::new();
+    let mut offsets = offsets.into_iter().peekable();
+    while let Some(offset) = offsets.next() {
+        let end = offsets.peek().copied().unwrap_or(section_len);
+        let entry = match extab.entry_at(ExTabOffset(offset))? {
+            read::ExTabEntry::Compact(entry) => {
+                ExTabEntry::Compact(convert_compact(&entry, bases)?)
+            }
+            read::ExTabEntry::Generic(entry) => {
+                ExTabEntry::Generic(convert_generic(entry, end, bases, lsdas)?)
+            }
+        };
+        extab_ids.insert(offset, table.add_extab_entry(entry));
+    }
+
+    for (entry, offset) in index {
+        let data = match entry.data() {
+            read::ExIdxEntryData::CantUnwind => IndexEntryData::CantUnwind,
+            read::ExIdxEntryData::Inline(compact) => {
+                IndexEntryData::Inline(convert_compact(compact, bases)?)
+            }
+            read::ExIdxEntryData::ExTab(_) => {
+                let id = offset.and_then(|offset| extab_ids.get(&offset).copied());
+                IndexEntryData::ExTab(id.ok_or(read::Error::OffsetOutOfBounds)?)
+            }
+        };
+        table.add_index_entry(IndexEntry {
+            function: Address::Constant(entry.function_address(bases)?),
+            data,
+        });
+    }
+    Ok(table)
 }
 
 fn convert_compact<R: Reader>(
@@ -240,10 +287,14 @@ fn convert_descriptor<R: Reader>(
     })
 }
 
+/// Convert a generic entry that ends at `end`. With `lsdas`, convert a
+/// GCC/LLVM-layout LSDA to a model.
+#[cfg_attr(not(feature = "lsda"), allow(unused_variables))]
 fn convert_generic<R: Reader>(
     mut entry: read::GenericEntry<R>,
     end: usize,
     bases: &BaseAddresses,
+    lsdas: bool,
 ) -> ConvertResult<GenericEntry> {
     let personality = Address::Constant(entry.personality_address(bases)?);
     entry.truncate((end - entry.offset().0).saturating_sub(4))?;
@@ -257,10 +308,52 @@ fn convert_generic<R: Reader>(
         lossless.then_some(GenericData::Gnu { instructions, lsda })
     };
     let data = match gnu() {
+        #[cfg(feature = "lsda")]
+        Some(GenericData::Gnu { instructions, lsda }) if lsdas => {
+            match convert_lsda(&entry, &lsda, bases) {
+                Some(model) => GenericData::GnuLsda {
+                    instructions,
+                    lsda: model,
+                },
+                None => GenericData::Gnu { instructions, lsda },
+            }
+        }
         Some(data) => data,
         None => GenericData::Raw(entry.data().to_slice()?.into_owned()),
     };
     Ok(GenericEntry { personality, data })
+}
+
+/// Convert the LSDA of a GCC/LLVM-layout entry to a model of the `lsda`
+/// crate, if writing the model in place reproduces `bytes`: the LSDA and
+/// the padding up to the next entry (none after the last entry).
+#[cfg(feature = "lsda")]
+fn convert_lsda<R: Reader>(
+    entry: &read::GenericEntry<R>,
+    bytes: &[u8],
+    bases: &BaseAddresses,
+) -> Option<lsda::write::Lsda> {
+    // Pc-relative pointers are relative to the place of the LSDA.
+    let offset = entry.gnu_lsda_offset().ok()?.0;
+    let last = offset + bytes.len() == entry.section().len();
+    let address = u64::from(bases.extab?) + offset as u64;
+    let section = read::LsdaReader::new(entry.gnu_lsda().ok()?);
+    let table = lsda::read::GccExceptTable::from_reader(section, lsda::Format::arm_ehabi());
+    let start = lsda::LsdaOffset(0);
+    let lsda_bases = lsda::BaseAddresses::default().set_section(address);
+    let (converted, ids) =
+        lsda::write::GccExceptTable::from_read(&table, &[start], &lsda_bases).ok()?;
+    let lsda::write::EntryData::Lsda(model) = &converted.get(*ids.get(&start)?).data else {
+        return None;
+    };
+
+    let mut written = EndianVec::new(entry.section().endian());
+    crate::write::gnu_lsda::write_lsda(&mut written, offset, model, bases).ok()?;
+    if !last {
+        let padding = (offset + written.len()).wrapping_neg() % 4;
+        written.write(&[0; 3][..padding]).ok()?;
+    }
+    (written.slice() == bytes).then(|| model.clone())
 }
 
 #[cfg(test)]

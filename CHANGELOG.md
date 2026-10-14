@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-10-14
+
+### Added
+
+- The `lsda` feature, which reads and writes the language-specific data
+  area of generic-model entries with the `lsda` crate:
+  `GenericEntry::parse_gnu_lsda` and the `LsdaReader` adapter,
+  `GenericData::GnuLsda`, which is written in place with `R_ARM_TARGET2`
+  relocations for symbol references, `UnwindTable::from_read_with_lsdas`,
+  and `lsda::Endianity` for the byte order types.
+- `write::Error::Lsda`, with the `lsda` feature.
+
+### Changed
+
+- `write::GenericData` is `#[non_exhaustive]`, so that variants such as
+  `GnuLsda` can be added without breaking matches. This is a breaking
+  change.
+
 ## [0.1.0] - 2026-10-14
 
 Initial release.
@@ -31,5 +49,6 @@ Initial release.
   `unwinder::Module::unwind_frame` unwinds one frame of a stopped program.
 - The `ehdump` example, which dumps the tables of an ELF file.
 
-[Unreleased]: https://github.com/Fee0/ehabi/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/Fee0/ehabi/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/Fee0/ehabi/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/Fee0/ehabi/releases/tag/v0.1.0

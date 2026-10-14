@@ -289,6 +289,12 @@ impl<R: Reader> GenericEntry<R> {
         Ok(self.personality.address(extab))
     }
 
+    /// Return the whole `.ARM.extab` section that holds the entry.
+    #[cfg(feature = "lsda")]
+    pub(crate) fn section(&self) -> &R {
+        &self.section
+    }
+
     /// Return the data following the personality routine reference.
     ///
     /// The length of a generic entry is not encoded, so this extends to the

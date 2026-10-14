@@ -53,7 +53,7 @@ libgcc (`unwind-arm-common.inc`, `pr-support.c`) for it.
 
 ```toml
 [dependencies]
-ehabi = "0.1"
+ehabi = "0.2"
 ```
 
 Minimum supported Rust version: **1.88** (edition 2024).
@@ -66,6 +66,7 @@ Minimum supported Rust version: **1.88** (edition 2024).
 | `write` | ✓ | The `write` module |
 | `unwinder` | ✓ | The `unwinder` module; implies `read` |
 | `fallible-iterator` | | Implements `fallible_iterator::FallibleIterator` for all iterators |
+| `lsda` | | Reads and writes the LSDA of generic-model entries with the [`lsda`](https://crates.io/crates/lsda) crate |
 
 ## Usage
 
@@ -184,6 +185,43 @@ frame saved are restored; caller-saved registers (r0-r3, r12) keep their
 values from the unwound frame. `unwinder::execute` runs an instruction
 sequence directly.
 
+### LSDAs (`lsda` feature)
+
+A generic-model entry for `__gxx_personality_v0` ends with a
+language-specific data area (LSDA) in the `.gcc_except_table` format: the
+call sites, landing pads and `catch` types of the function. With the `lsda`
+feature, the [`lsda`](https://crates.io/crates/lsda) crate reads and writes
+it in place:
+
+```rust
+use ehabi::read::UnwindEntry;
+use ehabi::write::UnwindTable;
+
+let mut entries = exidx.entries();
+while let Some(entry) = entries.next()? {
+    if let UnwindEntry::Generic(generic) = entry.resolve(&extab, &bases)? {
+        let lsda = generic.parse_gnu_lsda()?;
+        for call_site in lsda.parse_tables()?.call_sites {
+            println!("landing pad +{:#x}", call_site.landing_pad);
+        }
+    }
+}
+
+// Edit: convert the tables with their LSDAs, change them, and write them.
+let table = UnwindTable::from_read_with_lsdas(&exidx, &extab, &bases)?;
+table.write(&mut sections, &bases)?;
+```
+
+- `parse_gnu_lsda` reads the LSDA through `LsdaReader`, an adapter from this
+  crate's readers to `lsda`'s, so a `RelocateReader` relocates its
+  `R_ARM_TARGET2` type references too.
+- `from_read_with_lsdas` converts each LSDA to an `lsda::write::Lsda` in
+  `GenericData::GnuLsda` if it can be written back exactly, and keeps it as
+  bytes (`GenericData::Gnu`) otherwise.
+- A `GnuLsda` is written where its entry ends up, so pc-relative references
+  (GCC's `@TType` encoding) stay correct when entries move, and symbol
+  references to `type_info` objects become `R_ARM_TARGET2` relocations.
+
 ### Dumping an ELF file
 
 ```sh
@@ -199,9 +237,9 @@ personality routine, in a format similar to `llvm-readobj --unwind`.
   `.ARM.extab` pair. Selecting sections (for example the per-function
   `.ARM.exidx.text.*` sections produced by `-ffunction-sections`) and
   following `sh_link` is left to the caller.
-- **LSDA not parsed.** The language-specific data of generic entries
-  (`.gcc_except_table` format) is exposed as raw bytes. When written,
-  relocations inside it are not recorded.
+- **LSDAs need the `lsda` feature.** Without it, the language-specific data
+  of generic entries (`.gcc_except_table` format) is exposed as raw bytes,
+  and relocations inside it are not recorded when it is written.
 - **`R_ARM_TARGET2` values are raw.** Their interpretation is
   platform-specific (absolute, GOT-relative or place-relative).
 - **No sorting.** `UnwindTable::write` emits index entries in insertion
@@ -264,6 +302,13 @@ EHABI_CORPUS=../ehabi-corpus cargo test --release --test corpus -- --nocapture
 On Debian 13.7 this covers 61 libraries with 281,470 index entries, all of
 which pass. GCC uses the generic model for C++, so the corpus contains no
 compact-model descriptors; those are covered by the clang fixtures.
+
+With the `lsda` feature, `tests/lsda.rs` also converts the LSDA of every
+generic entry in the corpus and writes the sections back byte for byte:
+
+```sh
+EHABI_CORPUS=../ehabi-corpus cargo test --release --all-features --test lsda -- --nocapture
+```
 
 ### Differential testing against LLVM
 
